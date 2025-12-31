@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "scam"
+version = "0.1.0"
+description = "Star Craft Autonomous Model"
+requires-python = ">=3.14"
+dependencies = [
+    "burnysc2~=7.1.1",
+    "s2clientprotocol~=5.0.15",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ipython"
+]
