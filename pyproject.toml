@@ -1,19 +1,30 @@
-[build-system]
-requires = ["setuptools>=45", "wheel"]
-build-backend = "setuptools.build_meta"
-
-
 [project]
 name = "scam"
 version = "0.1.0"
-description = "Star Craft Autonomous Model"
+description = "Star Craft 2 Autonomous Model"
 requires-python = ">=3.14"
 dependencies = [
     "burnysc2~=7.1.1",
     "s2clientprotocol~=5.0.15",
+    "pettingzoo[butterfly]>=1.24.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "ipython"
 ]
+kaz = [
+    "websocket-client~=1.9.0",
+    "stable-baselines3>=2.0.0",
+    "supersuit>=3.9.0",
+    "pygame>=2.6.0",
+    "torch==2.9.1",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

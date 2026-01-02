@@ -22,32 +22,10 @@ from sc2.protocol import ConnectionAlreadyClosedError, Protocol, ProtocolError
 class RemoteController(Protocol):
     """Controller for a remote SC2 server (no local process)."""
 
-    async def create_game(
-        self,
-        map_path: str,
-        players: list[AbstractPlayer],
-        realtime: bool = False,
-        random_seed: int | None = None,
-        disable_fog: bool | None = None,
-    ):
-        """Create a game on the remote server.
-
-        Args:
-            map_path: Path to the map on the remote server. Can be:
-                - Relative path: "Ladder2019Season1/AutomatonLE.SC2Map" (appended to SC2's maps folder)
-                - Absolute path: "/home/rd/StarCraftII/Maps/Ladder2019Season1/AutomatonLE.SC2Map"
-            players: List of players (Bot or Computer)
-            realtime: Whether to run in realtime mode
-            random_seed: Optional random seed
-            disable_fog: Whether to disable fog of war
-
-        Note: On Linux, SC2 uses lowercase 'maps' folder by default. If your installation
-        uses 'Maps' (capital M), either create a symlink or use an absolute path.
-        """
+    async def create_game(self, map_path: str, players: list[AbstractPlayer]):
+        """Create a game on the remote server."""
         req = sc_pb.RequestCreateGame(
             local_map=sc_pb.LocalMap(map_path=map_path),
-            realtime=realtime,
-            disable_fog=disable_fog,
             random_seed=randint(0, 2**32 - 1),
         )
 
@@ -257,10 +235,7 @@ async def run_game_remote(
         result = await _play_game_ai(
             client, player_id, bot.ai, realtime, game_time_limit
         )
-        try:
-            await client.leave()
-        except ConnectionAlreadyClosedError:
-            logger.warning("Connection was closed before leaving game")
+        await client.leave()
 
         logger.info(f"Game finished with result: {result}")
         return result
@@ -274,20 +249,3 @@ async def run_game_remote(
             await ws.close()
         if session is not None:
             await session.close()
-
-
-def run_game_remote_sync(
-    url: str,
-    map_path: str,
-    bot: Bot,
-    opponent: AbstractPlayer,
-    realtime: bool = False,
-    random_seed: int | None = None,
-    disable_fog: bool | None = None,
-    save_replay_as: str | None = None,
-    game_time_limit: int | None = None,
-) -> Result | None:
-    """Synchronous wrapper for run_game_remote.
-
-    Same parameters as run_game_remote, but runs synchronously.
-    """
