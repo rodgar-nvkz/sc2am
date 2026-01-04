@@ -89,12 +89,15 @@ class SC2ClientProtocol:
         )
         return self.send(data=request).data
 
-    def kill_unit(self, unit_tags: list[int]) -> pb.ResponseDebug:
+    def kill_units(self, unit_tags: list[int]) -> pb.ResponseDebug:
+        if not unit_tags:
+            return pb.ResponseDebug()
         command = DebugCommand(kill_unit=DebugKillUnit(tag=unit_tags))
         return self.send(debug=pb.RequestDebug(debug=[command])).debug
 
-    def create_unit(self, unit_type: int, owner: int, pos: Point2D, quantity: int = 1) -> pb.ResponseDebug:
-        create = DebugCreateUnit(unit_type=unit_type, owner=owner, pos=pos, quantity=quantity)
+    def spawn_units(self, unit_type: int, pos: tuple[float, float], owner: int, quantity: int = 1) -> pb.ResponseDebug:
+        position = Point2D(x=pos[0], y=pos[1])
+        create = DebugCreateUnit(unit_type=unit_type, owner=owner, pos=position, quantity=quantity)
         command = DebugCommand(create_unit=create)
         return self.send(debug=pb.RequestDebug(debug=[command])).debug
 
@@ -102,18 +105,31 @@ class SC2ClientProtocol:
 class SC2Client(SC2ClientProtocol):
     def __init__(self, socket: websocket.WebSocket) -> None:
         super().__init__(socket)
+        self._structure_types: set[int] | None = None
 
-    @staticmethod
-    def unpack_grid(data: bytes, width: int, height: int) -> np.ndarray:
-        """Unpack bit-packed grid data to numpy array."""
-        buffer = np.frombuffer(data, dtype=np.uint8)
-        buffer = np.unpackbits(buffer)
-        expected_size = width * height
-        if len(buffer) >= expected_size:
-            buffer = buffer[:expected_size]
-        else:
-            buffer = np.pad(buffer, (0, expected_size - len(buffer)))
-        return buffer.reshape(height, width)
+    @property
+    def structure_types(self) -> set[int]:
+        if self._structure_types is None:
+            game_data = self.get_game_data()
+            self._structure_types = {u.unit_id for u in game_data.units if 8 in u.attributes}
+        return self._structure_types
+
+    def kill_all_units(self) -> None:
+        obs = self.get_observation()
+        unit_tags = [u.tag for u in obs.observation.raw_data.units if u.unit_type not in self.structure_types]
+        self.kill_units(unit_tags)
+
+    # @staticmethod
+    # def unpack_grid(data: bytes, width: int, height: int) -> np.ndarray:
+    #     """Unpack bit-packed grid data to numpy array."""
+    #     buffer = np.frombuffer(data, dtype=np.uint8)
+    #     buffer = np.unpackbits(buffer)
+    #     expected_size = width * height
+    #     if len(buffer) >= expected_size:
+    #         buffer = buffer[:expected_size]
+    #     else:
+    #         buffer = np.pad(buffer, (0, expected_size - len(buffer)))
+    #     return buffer.reshape(height, width)
 
     # def get_random_position(self) -> Point2D:
     #     """Get a random position within the playable area."""

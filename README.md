@@ -1,11 +1,11 @@
 ## StarCraft II Autonomous Model (SC2AM)
 
-> 🚧 **Work in progress** — not yet usable 🚧
+> 🚧 **Work in progress** — not usable yet
 
 SC2 based parallel Gymnasium environment optimized for RL training at a high throughput.
 
 
-## Reasoning
+### Reasoning
 
 AlphaStar proved RL can master StarCraft II but their brute-force approach demanded massive hardware. We believe there's another way. Proving it requires a solid foundation built for RL training from the ground up.
 

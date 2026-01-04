@@ -2,6 +2,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from loguru import logger
+from s2clientprotocol.common_pb2 import Race
 
 from scam.infra.client import PortConfig, SC2Client
 from scam.infra.server import SC2LocalhostServer
@@ -9,6 +10,8 @@ from scam.maps.generator import MapGenerator
 
 
 class SC2MultiplayerGame:
+    RACES: list[int] = [Race.Terran, Race.Zerg, Race.Protoss]
+
     def __init__(self, races: list[int]) -> None:
         self.maps = MapGenerator()
         self.races = races
@@ -20,7 +23,7 @@ class SC2MultiplayerGame:
     def join_args(self, i) -> tuple:
         return self.races[i], self.port_config, None if i == 0 else self.servers[0].host
 
-    def launch(self) -> None:
+    def launch(self) -> "SC2MultiplayerGame":
         for _ in range(len(self.races)):
             server = SC2LocalhostServer()
             self.servers.append(server)
@@ -29,6 +32,7 @@ class SC2MultiplayerGame:
         self.clients[0].host_game(next(self.maps), players=self.races)
         list(self.pool.map(lambda i: self.clients[i].join_game(*self.join_args(i)), range(len(self.races))))
         logger.info("All players have joined the game")
+        return self
 
     def step(self) -> int:
         steps = list(self.pool.map(lambda c: c.step().simulation_loop, self.clients))
