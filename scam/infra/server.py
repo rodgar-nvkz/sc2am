@@ -34,5 +34,5 @@ class SC2LocalhostServer:
 
     def close(self):
         self.socket.close()
-        self.server.terminate()
+        self.server.kill()
         self.server.wait()

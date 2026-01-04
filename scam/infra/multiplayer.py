@@ -1,3 +1,4 @@
+import atexit
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,6 +20,7 @@ class SC2MultiplayerGame:
         self.clients: list[SC2Client] = []
         self.pool = ThreadPoolExecutor(max_workers=len(races))
         self.port_config = PortConfig.pick_ports(len(self.races))
+        atexit.register(self.close)
 
     def join_args(self, i) -> tuple:
         return self.races[i], self.port_config, None if i == 0 else self.servers[0].host
