@@ -1,10 +1,10 @@
 from dataclasses import dataclass
 
-import numpy as np
 import websocket
 from portpicker import PickUnusedPort
+from s2clientprotocol import raw_pb2 as raw
 from s2clientprotocol import sc2api_pb2 as pb
-from s2clientprotocol.common_pb2 import Point2D
+from s2clientprotocol.common_pb2 import Point2D, Race
 from s2clientprotocol.debug_pb2 import DebugCommand, DebugCreateUnit, DebugKillUnit
 
 
@@ -28,8 +28,18 @@ class PortConfig:
 
 
 class SC2ClientProtocol:
+    # stableid.json
+    ABILITY_MOVE = 16
+    ABILITY_ATTACK = 23
+    ABILITY_STOP = 3665
+
     def __init__(self, socket: websocket.WebSocket) -> None:
         self.socket = socket
+
+    @staticmethod
+    def player(race: Race, controlled: bool) -> pb.PlayerSetup:
+        type = pb.Participant if controlled else pb.Computer
+        return pb.PlayerSetup(race=race, type=type)
 
     def send(self, **kwargs) -> pb.Response:
         request = pb.Request(**kwargs)
@@ -40,53 +50,48 @@ class SC2ClientProtocol:
         response.ParseFromString(response_raw)
         return response
 
-    def host_game(self, map_data: bytes, players: list[int]):
-        setup = [pb.PlayerSetup(race=race, type=pb.PlayerType.Participant) for race in players]
+    def host_game(self, map_data: bytes, players: list[pb.PlayerSetup]) -> pb.ResponseCreateGame:
         local_map = pb.LocalMap(map_data=map_data)
-        request = pb.RequestCreateGame(local_map=local_map, player_setup=setup, realtime=False)
+        request = pb.RequestCreateGame(
+            local_map=local_map, player_setup=players, realtime=False
+        )
         response = self.send(create_game=request).create_game
         return response
 
-    def join_game(self, race: int, port_config: PortConfig, host_ip: str | None = None) -> pb.ResponseJoinGame:
+    def join_game(self, race: Race, port_config: PortConfig | None = None, host_ip: str | None = None) -> pb.ResponseJoinGame:
         interface_options = pb.InterfaceOptions(
             raw=True,
             score=True,
             show_cloaked=True,
-            show_placeholders=False,
+            show_placeholders=True,
             show_burrowed_shadows=True,
-            raw_affects_selection=False,
-            raw_crop_to_playable_area=False,
+            raw_affects_selection=True,
+            raw_crop_to_playable_area=True,
         )
-        request = pb.RequestJoinGame(
-            race=race,
-            options=interface_options,
-            server_ports=port_config.server_port_set,
-            client_ports=port_config.client_port_set,
-            shared_port=port_config.shared_port,
-        )
+        request = pb.RequestJoinGame(race=race, options=interface_options)
+        if port_config:
+            request.shared_port = port_config.shared_port
+            request.server_ports = port_config.server_port_set
+            request.client_ports.extend(port_config.client_port_set)
         if host_ip is not None:
             request.host_ip = host_ip
+        return self.send(join_game=request).join_game
 
-        response = self.send(join_game=request).join_game
-        return response
+    def restart_game(self) -> pb.ResponseRestartGame:
+        """"Restart not supported in multiplayer, extremely slow in singleplayer"""
+        return self.send(restart_game=pb.RequestRestartGame()).restart_game
 
     def step(self, count: int = 1) -> pb.ResponseStep:
         return self.send(step=pb.RequestStep(count=count)).step
 
-    def get_observation(self) -> pb.ResponseObservation:
-        return self.send(observation=pb.RequestObservation()).observation
+    def get_observation(self, disable_fog: bool = True) -> pb.ResponseObservation:
+        return self.send(observation=pb.RequestObservation(disable_fog=disable_fog)).observation
 
     def get_game_info(self) -> pb.ResponseGameInfo:
         return self.send(game_info=pb.RequestGameInfo()).game_info
 
     def get_game_data(self) -> pb.ResponseData:
-        request = pb.RequestData(
-            ability_id=True,
-            unit_type_id=True,
-            upgrade_id=True,
-            buff_id=True,
-            effect_id=True,
-        )
+        request = pb.RequestData(ability_id=True, unit_type_id=True, upgrade_id=True, buff_id=True, effect_id=True)
         return self.send(data=request).data
 
     def kill_units(self, unit_tags: list[int]) -> pb.ResponseDebug:
@@ -101,86 +106,32 @@ class SC2ClientProtocol:
         command = DebugCommand(create_unit=create)
         return self.send(debug=pb.RequestDebug(debug=[command])).debug
 
+    def unit_command(self, cmd: raw.ActionRawUnitCommand) -> pb.ResponseAction:
+        action = pb.Action(action_raw=raw.ActionRaw(unit_command=cmd))
+        return self.send(action=pb.RequestAction(actions=[action])).action
+
+    def unit_move(self, unit_tag: int, target_pos: tuple[float, float]) -> pb.ResponseAction:
+        cmd = raw.ActionRawUnitCommand(ability_id=self.ABILITY_MOVE, unit_tags=[unit_tag])
+        cmd.target_world_space_pos.x, cmd.target_world_space_pos.y = target_pos
+        return self.unit_command(cmd)
+
+    def unit_stop(self, unit_tag: int) -> pb.ResponseAction:
+        cmd = raw.ActionRawUnitCommand(ability_id=self.ABILITY_STOP, unit_tags=[unit_tag])
+        return self.unit_command(cmd)
+
+    def unit_attack(self, unit_tag: int, target_pos: tuple[float, float]) -> pb.ResponseAction:
+        cmd = raw.ActionRawUnitCommand(ability_id=self.ABILITY_ATTACK, unit_tags=[unit_tag])
+        cmd.target_world_space_pos.x, cmd.target_world_space_pos.y = target_pos
+        return self.unit_command(cmd)
+
+    def unit_attack_unit(self, unit_tag: int, target_unit_tag: int) -> pb.ResponseAction:
+        cmd = raw.ActionRawUnitCommand(ability_id=self.ABILITY_ATTACK, unit_tags=[unit_tag])
+        cmd.target_unit_tag = target_unit_tag
+        return self.unit_command(cmd)
+
+    def save_replay(self) -> bytes:
+        return self.send(save_replay=pb.RequestSaveReplay()).save_replay.data
+
 
 class SC2Client(SC2ClientProtocol):
-    def __init__(self, socket: websocket.WebSocket) -> None:
-        super().__init__(socket)
-        self._structure_types: set[int] | None = None
-
-    @property
-    def structure_types(self) -> set[int]:
-        if self._structure_types is None:
-            game_data = self.get_game_data()
-            self._structure_types = {u.unit_id for u in game_data.units if 8 in u.attributes}
-        return self._structure_types
-
-    def kill_all_units(self) -> None:
-        obs = self.get_observation()
-        unit_tags = [u.tag for u in obs.observation.raw_data.units if u.unit_type not in self.structure_types]
-        self.kill_units(unit_tags)
-
-    # @staticmethod
-    # def unpack_grid(data: bytes, width: int, height: int) -> np.ndarray:
-    #     """Unpack bit-packed grid data to numpy array."""
-    #     buffer = np.frombuffer(data, dtype=np.uint8)
-    #     buffer = np.unpackbits(buffer)
-    #     expected_size = width * height
-    #     if len(buffer) >= expected_size:
-    #         buffer = buffer[:expected_size]
-    #     else:
-    #         buffer = np.pad(buffer, (0, expected_size - len(buffer)))
-    #     return buffer.reshape(height, width)
-
-    # def get_random_position(self) -> Point2D:
-    #     """Get a random position within the playable area."""
-    #     p0 = self._playable_area.p0
-    #     p1 = self._playable_area.p1
-    #     x = random.uniform(p0.x + 5, p1.x - 5)
-    #     y = random.uniform(p0.y + 5, p1.y - 5)
-    #     return Point2D(x=x, y=y)
-
-    # def kill_all_units(self) -> None:
-    #     """Kill all units on the map."""
-    #     obs = self.observation()
-    #     unit_tags = [unit.tag for unit in obs.observation.raw_data.units]
-    #     if unit_tags:
-    #         self.kill_unit(unit_tags)
-    #         self.step()
-
-    # def spawn_units(self, unit_type: int, owner: int, quantity: int) -> None:
-    #     """Spawn units at a random position."""
-    #     pos = self.get_random_position()
-    #     self.create_unit(unit_type=unit_type, owner=owner, pos=pos, quantity=quantity)
-    #     self.step()
-
-    # def get_visibility_grid(self) -> np.ndarray:
-    #     """Get visibility map as numpy array."""
-    #     obs = self.observation()
-    #     map_state = obs.observation.raw_data.map_state
-    #     width, height = self._map_size
-    #     return self.unpack_grid(map_state.visibility.data, width, height)
-
-    # def get_creep_grid(self) -> np.ndarray:
-    #     """Get creep map as numpy array."""
-    #     obs = self.observation()
-    #     map_state = obs.observation.raw_data.map_state
-    #     width, height = self._map_size
-    #     return self.unpack_grid(map_state.creep.data, width, height)
-
-    # def get_unit_positions(self, owner: int) -> np.ndarray:
-    #     """Get unit positions for a player as numpy array."""
-    #     obs = self.observation()
-    #     width, height = self._map_size
-    #     grid = np.zeros((height, width), dtype=np.uint8)
-    #     for unit in obs.observation.raw_data.units:
-    #         if unit.owner == owner:
-    #             x = int(unit.pos.x)
-    #             y = int(unit.pos.y)
-    #             if 0 <= x < width and 0 <= y < height:
-    #                 grid[y, x] = 1
-    #     return grid
-
-    # def get_pathing_grid(self) -> np.ndarray:
-    #     """Get static pathing grid as numpy array."""
-    #     pathing = self._game_info.start_raw.pathing_grid
-    #     return self.unpack_grid(pathing.data, pathing.size.x, pathing.size.y)
+    """SC2 Client over WebSocket connection"""
