@@ -1,26 +1,31 @@
 [project]
-name = "scam"
-version = "0.1.0"
-description = "Star Craft 2 Autonomous Model"
-requires-python = ">=3.14"
+name = "scame"
+version = "0.1.1"
+description = "Star Craft 2 Autonomous Model Environment"
+requires-python = "~=3.14.2"
 dependencies = [
-    "burnysc2~=7.1.1",
-    "s2clientprotocol~=5.0.15",
+    "s2clientprotocol @ git+https://github.com/rodgar-nvkz/s2client-proto.git",
+    "websocket-client~=1.9.0",
+    "stable-baselines3~=2.7.1",
     "pettingzoo[butterfly]~=1.24.0",
     "mpyq~=0.2.5",
+    "tensorboard~=2.20.0",
+    "wsaccel~=0.6.7",
+    "loguru~=0.7.3",
+    "portpicker~=1.6.0",
+    "protobuf~=6.33.2",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "ipython"
+    "ipython~=9.9.0",
 ]
 kaz = [
-    "websocket-client~=1.9.0",
-    "stable-baselines3>=2.0.0",
     "supersuit>=3.9.0",
     "pygame>=2.6.0",
     "torch==2.9.1",
 ]
+
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

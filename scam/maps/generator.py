@@ -8,7 +8,7 @@ from scam.settings import PROJECT_ROOT
 class MapGenerator:
     """A placeholder for maps generation and manipulation"""
 
-    TEMPLATES = ("Flat32.SC2Map",)
+    TEMPLATES = ("Flat32s.SC2Map",)
 
     def __init__(self, folder: str = "maps") -> None:
         self.folder = PROJECT_ROOT / folder

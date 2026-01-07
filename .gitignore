@@ -8,6 +8,7 @@ __pycache__/
 
 # Distribution / packaging
 .Python
+logs/
 build/
 develop-eggs/
 dist/
@@ -147,5 +148,3 @@ cython_debug/
 
 # StarCraft 2 specific
 *.SC2Replay
-*.SC2Map
-!maps/*.SC2Map
