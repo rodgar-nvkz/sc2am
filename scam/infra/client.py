@@ -51,10 +51,9 @@ class SC2ClientProtocol:
         return response
 
     def host_game(self, map_data: bytes, players: list[pb.PlayerSetup]) -> pb.ResponseCreateGame:
-        local_map = pb.LocalMap(map_data=map_data)
-        request = pb.RequestCreateGame(
-            local_map=local_map, player_setup=players, realtime=False
-        )
+        # local_map = pb.LocalMap(map_data=map_data)
+        local_map = pb.LocalMap(map_path="Flat32s.SC2Map")
+        request = pb.RequestCreateGame(local_map=local_map, player_setup=players, realtime=False)
         response = self.send(create_game=request).create_game
         return response
 
@@ -71,7 +70,7 @@ class SC2ClientProtocol:
         request = pb.RequestJoinGame(race=race, options=interface_options)
         if port_config:
             request.shared_port = port_config.shared_port
-            request.server_ports = port_config.server_port_set
+            request.server_ports.CopyFrom(port_config.server_port_set)
             request.client_ports.extend(port_config.client_port_set)
         if host_ip is not None:
             request.host_ip = host_ip

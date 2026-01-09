@@ -6,9 +6,11 @@ __pycache__/
 # C extensions
 *.so
 
+# ML-related artifacts (models, logs, replays, checkpoints, etc.)
+artifacts/
+
 # Distribution / packaging
 .Python
-logs/
 build/
 develop-eggs/
 dist/

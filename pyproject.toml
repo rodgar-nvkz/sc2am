@@ -1,7 +1,7 @@
 [project]
-name = "scame"
-version = "0.1.1"
-description = "Star Craft 2 Autonomous Model Environment"
+name = "SMARLE"
+version = "0.1.2"
+description = "Star Craft 2 Multi Agent Reinforcement Learning Environment"
 requires-python = "~=3.14.2"
 dependencies = [
     "s2clientprotocol @ git+https://github.com/rodgar-nvkz/s2client-proto.git",
@@ -14,16 +14,12 @@ dependencies = [
     "loguru~=0.7.3",
     "portpicker~=1.6.0",
     "protobuf~=6.33.2",
+    "torch==2.9.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "ipython~=9.9.0",
-]
-kaz = [
-    "supersuit>=3.9.0",
-    "pygame>=2.6.0",
-    "torch==2.9.1",
 ]
 
 

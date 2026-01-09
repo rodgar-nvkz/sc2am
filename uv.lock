@@ -734,53 +734,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "scam"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "loguru" },
-    { name = "mpyq" },
-    { name = "pettingzoo", extra = ["butterfly"] },
-    { name = "portpicker" },
-    { name = "protobuf" },
-    { name = "s2clientprotocol" },
-    { name = "stable-baselines3" },
-    { name = "tensorboard" },
-    { name = "websocket-client" },
-    { name = "wsaccel" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "ipython" },
-]
-kaz = [
-    { name = "pygame" },
-    { name = "supersuit" },
-    { name = "torch", version = "2.9.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
-    { name = "torch", version = "2.9.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "ipython", marker = "extra == 'dev'" },
-    { name = "loguru", specifier = "~=0.7.3" },
-    { name = "mpyq", specifier = "~=0.2.5" },
-    { name = "pettingzoo", extras = ["butterfly"], specifier = "~=1.24.0" },
-    { name = "portpicker", specifier = "~=1.6.0" },
-    { name = "protobuf", specifier = "~=6.33.2" },
-    { name = "pygame", marker = "extra == 'kaz'", specifier = ">=2.6.0" },
-    { name = "s2clientprotocol", git = "https://github.com/rodgar-nvkz/s2client-proto.git" },
-    { name = "stable-baselines3", specifier = ">=2.0.0" },
-    { name = "supersuit", marker = "extra == 'kaz'", specifier = ">=3.9.0" },
-    { name = "tensorboard", specifier = "~=2.20.0" },
-    { name = "torch", marker = "extra == 'kaz'", specifier = "==2.9.1", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "websocket-client", specifier = "~=1.9.0" },
-    { name = "wsaccel", specifier = "~=0.6.7" },
-]
-provides-extras = ["dev", "kaz"]
-
-[[package]]
 name = "setuptools"
 version = "80.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -797,6 +750,47 @@ sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
 ]
+
+[[package]]
+name = "smarle"
+version = "0.1.2"
+source = { virtual = "." }
+dependencies = [
+    { name = "loguru" },
+    { name = "mpyq" },
+    { name = "pettingzoo", extra = ["butterfly"] },
+    { name = "portpicker" },
+    { name = "protobuf" },
+    { name = "s2clientprotocol" },
+    { name = "stable-baselines3" },
+    { name = "tensorboard" },
+    { name = "torch", version = "2.9.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.9.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
+    { name = "websocket-client" },
+    { name = "wsaccel" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "ipython" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ipython", marker = "extra == 'dev'", specifier = "~=9.9.0" },
+    { name = "loguru", specifier = "~=0.7.3" },
+    { name = "mpyq", specifier = "~=0.2.5" },
+    { name = "pettingzoo", extras = ["butterfly"], specifier = "~=1.24.0" },
+    { name = "portpicker", specifier = "~=1.6.0" },
+    { name = "protobuf", specifier = "~=6.33.2" },
+    { name = "s2clientprotocol", git = "https://github.com/rodgar-nvkz/s2client-proto.git" },
+    { name = "stable-baselines3", specifier = "~=2.7.1" },
+    { name = "tensorboard", specifier = "~=2.20.0" },
+    { name = "torch", specifier = "==2.9.1", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "websocket-client", specifier = "~=1.9.0" },
+    { name = "wsaccel", specifier = "~=0.6.7" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "stable-baselines3"
@@ -828,20 +822,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/28/e3/55dcc2cfbc3ca9c29519eb6884dd1415ecb53b0e934862d3559ddcb7e20b/stack_data-0.6.3.tar.gz", hash = "sha256:836a778de4fec4dcd1dcd89ed8abff8a221f58308462e1c4aa2a3cf30148f0b9", size = 44707, upload-time = "2023-09-30T13:58:05.479Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/7b/ce1eafaf1a76852e2ec9b22edecf1daa58175c090266e9f6c64afcd81d91/stack_data-0.6.3-py3-none-any.whl", hash = "sha256:d5558e0c25a4cb0853cddad3d77da9891a08cb85dd9f9f91b9f8cd66e511e695", size = 24521, upload-time = "2023-09-30T13:58:03.53Z" },
-]
-
-[[package]]
-name = "supersuit"
-version = "3.10.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "gymnasium" },
-    { name = "numpy" },
-    { name = "tinyscaler" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/7c/68/16b774842f9be011d2accc6ab86bc3808854a36ce5456e4e19b9ad7c484b/supersuit-3.10.0.tar.gz", hash = "sha256:85cc4723e2ee4fc7284e0e5586d9e20360ee073bc0d8b997fe48686c83cd348a", size = 34350, upload-time = "2025-04-22T16:01:24.921Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b5/6e/fce0b8179ba9e99c40cd3fb013657110e4d5ca894de3f9aa4962b6a9d86c/supersuit-3.10.0-py3-none-any.whl", hash = "sha256:fd0b9e351808d3efaedafcbe48a6beb1f6a87828ccfeaf410af4b87e32882a7f", size = 50180, upload-time = "2025-04-22T16:01:23.654Z" },
 ]
 
 [[package]]
@@ -885,15 +865,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/85/dabeaf902892922777492e1d253bb7e1264cadce3cea932f7ff599e53fea/tensorboard_data_server-0.7.2-py3-none-macosx_10_9_x86_64.whl", hash = "sha256:9fe5d24221b29625dbc7328b0436ca7fc1c23de4acf4d272f1180856e32f9f60", size = 4823598, upload-time = "2023-10-23T21:23:33.714Z" },
     { url = "https://files.pythonhosted.org/packages/73/c6/825dab04195756cf8ff2e12698f22513b3db2f64925bdd41671bfb33aaa5/tensorboard_data_server-0.7.2-py3-none-manylinux_2_31_x86_64.whl", hash = "sha256:ef687163c24185ae9754ed5650eb5bc4d84ff257aabdc33f0cc6f74d8ba54530", size = 6590363, upload-time = "2023-10-23T21:23:35.583Z" },
 ]
-
-[[package]]
-name = "tinyscaler"
-version = "1.2.8"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/0d/59/6b6495fe9bb3153306a4bd6dd24c78ff74eaf64f90fc6e545ede0574cfbe/tinyscaler-1.2.8.tar.gz", hash = "sha256:0ce3b77562f1db74b2035ccaf62807af043333ce655e71effd6ec85fbf8ded06", size = 156935, upload-time = "2024-08-02T19:25:10.976Z" }
 
 [[package]]
 name = "torch"
