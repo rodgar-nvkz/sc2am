@@ -5,7 +5,7 @@ from ray.rllib.algorithms.appo import APPOConfig
 from ray.tune import Callback, CLIReporter
 from ray.tune.registry import register_env
 
-from scam.envs.gym import SC2GymEnv
+from scam.envs.gym_v0 import SC2GymEnv
 
 register_env("sc2_mvz_v1", lambda cfg: SC2GymEnv())
 

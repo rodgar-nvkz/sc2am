@@ -27,7 +27,7 @@ from ray.rllib.algorithms.dreamerv3 import DreamerV3Config
 from ray.rllib.core.rl_module import RLModule
 from ray.tune.registry import register_env
 
-from scam.envs.gym import SC2GymEnv
+from scam.envs.gym_v0 import SC2GymEnv
 
 if TYPE_CHECKING:
     from ray.rllib.algorithms.algorithm import Algorithm
