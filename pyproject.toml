@@ -2,7 +2,7 @@
 name = "SMARLE"
 version = "0.1.2"
 description = "Star Craft 2 Multi Agent Reinforcement Learning Environment"
-requires-python = "~=3.14.2"
+requires-python = "~=3.12.5"
 dependencies = [
     "s2clientprotocol @ git+https://github.com/rodgar-nvkz/s2client-proto.git",
     "websocket-client~=1.9.0",
@@ -15,6 +15,8 @@ dependencies = [
     "portpicker~=1.6.0",
     "protobuf~=6.33.2",
     "torch==2.9.1",
+    "ray[rllib]~=2.53.0",
+    "sb3-contrib>=2.7.1",
 ]
 
 [project.optional-dependencies]
@@ -24,9 +26,9 @@ dev = [
 
 
 [[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
+torch = { index = "pytorch-cu128" }

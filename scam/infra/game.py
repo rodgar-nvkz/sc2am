@@ -12,6 +12,7 @@ from scam.maps.generator import MapGenerator
 
 class SC2SingleGame:
     RACES: list[Race] = [Terran, Zerg, Protoss]
+    SAFE_GAME_STEPS = 22.4 * 3600 * 4  # 4 hour when played in "real time"
 
     def __init__(self, races: list[Race]) -> None:
         self.maps = MapGenerator()
@@ -20,6 +21,7 @@ class SC2SingleGame:
         self.clients: list[SC2Client] = []
         self.pool = ThreadPoolExecutor(max_workers=len(races))
         self.port_config = PortConfig.pick_ports(len(self.races))
+        self.game_step: int = 0
         atexit.register(self.close)
 
     def launch(self) -> "SC2SingleGame":
@@ -33,7 +35,17 @@ class SC2SingleGame:
         return self
 
     def step(self, count: int = 1) -> int:
+        self.game_step += count
         return self.clients[0].step(count).simulation_loop
+
+    def reset_map(self) -> None:
+        """Reset the current game if it is required"""
+        if self.game_step >= self.SAFE_GAME_STEPS:
+            logger.info(
+                f"Resetting map after {self.game_step} steps (limit {self.SAFE_GAME_STEPS})"
+            )
+            self.clients[0].restart_game()
+            self.game_step = 0
 
     def perf(self, seconds: int = 5, obs: bool = False) -> None:
         steps, start = 0, time.time()
@@ -43,7 +55,9 @@ class SC2SingleGame:
                 self.clients[0].get_observation()
             steps += 1
         duration = time.time() - start
-        logger.info(f"Performance: {steps / duration:.2f} steps/sec over {duration:.2f} seconds")
+        logger.info(
+            f"Performance: {steps / duration:.2f} steps/sec over {duration:.2f} seconds"
+        )
 
     def close(self) -> None:
         for server in self.servers:

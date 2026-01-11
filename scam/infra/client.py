@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 
 import websocket
+from loguru import logger
 from portpicker import PickUnusedPort
 from s2clientprotocol import raw_pb2 as raw
 from s2clientprotocol import sc2api_pb2 as pb
 from s2clientprotocol.common_pb2 import Point2D, Race
 from s2clientprotocol.debug_pb2 import DebugCommand, DebugCreateUnit, DebugKillUnit
+from torch.fx.experimental.symbolic_shapes import Result
 
 
 @dataclass
@@ -48,12 +50,13 @@ class SC2ClientProtocol:
         assert isinstance(response_raw, bytes)
         response = pb.Response()
         response.ParseFromString(response_raw)
+        assert not response.error, f"SC2 API Error: {response.error}"
         return response
 
-    def host_game(self, map_data: bytes, players: list[pb.PlayerSetup]) -> pb.ResponseCreateGame:
+    def host_game(self, map_data: bytes, players: list[pb.PlayerSetup], disable_fog: bool = True) -> pb.ResponseCreateGame:
         # local_map = pb.LocalMap(map_data=map_data)
         local_map = pb.LocalMap(map_path="Flat32s.SC2Map")
-        request = pb.RequestCreateGame(local_map=local_map, player_setup=players, realtime=False)
+        request = pb.RequestCreateGame(local_map=local_map, player_setup=players, realtime=False, disable_fog=disable_fog)
         response = self.send(create_game=request).create_game
         return response
 
@@ -124,8 +127,7 @@ class SC2ClientProtocol:
         return self.unit_command(cmd)
 
     def unit_attack_unit(self, unit_tag: int, target_unit_tag: int) -> pb.ResponseAction:
-        cmd = raw.ActionRawUnitCommand(ability_id=self.ABILITY_ATTACK, unit_tags=[unit_tag])
-        cmd.target_unit_tag = target_unit_tag
+        cmd = raw.ActionRawUnitCommand(ability_id=self.ABILITY_ATTACK, unit_tags=[unit_tag], target_unit_tag=target_unit_tag)
         return self.unit_command(cmd)
 
     def save_replay(self) -> bytes:
