@@ -12,8 +12,8 @@ from typing import Any
 
 import gymnasium as gym
 import numpy as np
-from gymnasium import spaces
 import pettingzoo
+from gymnasium import spaces
 
 from scam.infra.client import SC2Client
 from scam.infra.game import SC2SingleGame, Terran, Zerg
@@ -62,7 +62,7 @@ DIRECTION_VECTORS = {
 MOVE_STEP_SIZE = 2.0
 
 # Environment constants
-MAX_EPISODE_STEPS = 224  # 10 seconds at faster speed
+MAX_EPISODE_STEPS = 22.4 * 20  # 20 realtime seconds
 
 # Spawn configuration
 SPAWN_AREA_MIN = 0.0 + 14
@@ -103,21 +103,22 @@ class UnitState:
         return math.atan2(other.y - self.y, other.x - self.x)
 
 
-class SC2EpisodeEnvironment(pettingzoo.ParallelEnv):
+class SC2GymEnv(gym.Env):
     """1 Marine vs 1 Zergling environment on a Flat map"""
 
     metadata = {"name": "sc2_mvz_v1", "render_modes": []}
+    GAME_STEPS_PER_ENV_STEP = 4
 
     def __init__(self, env_ctx: dict | None = None) -> None:
         super().__init__()
 
         self.agents = ["marine"]
         self.possible_agents = ["marine"]
-        self.action_spaces = {"marine": spaces.Discrete(NUM_ACTIONS)}
-        self.observation_spaces = {"marine": spaces.Box(low=-1.0, high=1.0, shape=(8,), dtype=np.float32)}
+        self.action_space = spaces.Discrete(NUM_ACTIONS)
+        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(8,), dtype=np.float32)
 
-        # Required for SuperSuit compatibility
-        self.render_mode = None
+        # # Required for SuperSuit compatibility
+        # self.render_mode = None
 
         self._game = None
         self._client = None
@@ -139,12 +140,6 @@ class SC2EpisodeEnvironment(pettingzoo.ParallelEnv):
         if not self._client:
             self._client = self.game.clients[0]
         return self._client
-
-    def observation_space(self, agent: str) -> spaces.Space:
-        return self.observation_spaces[agent]
-
-    def action_space(self, agent: str) -> spaces.Space:
-        return self.action_spaces[agent]
 
     def _get_units(self) -> tuple[UnitState | None, UnitState | None]:
         """Get current unit states from observation."""
@@ -215,16 +210,13 @@ class SC2EpisodeEnvironment(pettingzoo.ParallelEnv):
 
         # Terminal rewards - large to dominate the reward signal
         if zergling_dead:
-            reward += 10.0  # Win bonus
+            reward += 10.0
         if marine_dead:
-            reward -= 10.0  # Lose penalty
+            reward -= 10.0
 
         # Timeout penalty - discourage stalling/avoiding combat
-        if (
-            not marine_dead
-            and not zergling_dead
-            and self.current_step >= MAX_EPISODE_STEPS
-        ):
+        timeout = not marine_dead and not zergling_dead and self.current_step >= MAX_EPISODE_STEPS
+        if timeout:
             reward -= 15.0
 
         # Damage-based rewards (only if both units exist)
@@ -239,7 +231,7 @@ class SC2EpisodeEnvironment(pettingzoo.ParallelEnv):
 
         return reward
 
-    def _execute_marine_action(self, action: int) -> None:
+    def _agent_action(self, action: int) -> None:
         """Execute the Marine's action."""
         if self.marine is None or not self.marine.is_alive:
             return
@@ -277,23 +269,13 @@ class SC2EpisodeEnvironment(pettingzoo.ParallelEnv):
         self.client.spawn_units(UNIT_ZERGLING, (ling_x, ling_y), owner=2, quantity=1)
         self.game.step(count=3)  # require at least 3 steps to spawn units
 
-    def reset(
-        self, seed: int | None = None, options: dict | None = None
-    ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         """Reset the environment for a new episode."""
-        # Reset episode state FIRST to ensure clean state
         self.current_step = 0
         self._episode_ended = False
 
-        # self.client.restart_game()
-        # self.game.step(count=20)
-
         obs = self.client.get_observation()
-        units = [
-            u.tag
-            for u in obs.observation.raw_data.units
-            if u.unit_type in (UNIT_MARINE, UNIT_ZERGLING)
-        ]
+        units = [u.tag for u in obs.observation.raw_data.units if u.unit_type in (UNIT_MARINE, UNIT_ZERGLING)]
         self.client.kill_units(units)
 
         self._spawn_units(seed)
@@ -305,48 +287,28 @@ class SC2EpisodeEnvironment(pettingzoo.ParallelEnv):
 
         # Initialize HP tracking for reward computation
         self.prev_marine_hp = self.marine.health if self.marine else MARINE_MAX_HP
-        self.prev_zergling_hp = (
-            self.zergling.health if self.zergling else ZERGLING_MAX_HP
-        )
+        self.prev_zergling_hp = self.zergling.health if self.zergling else ZERGLING_MAX_HP
 
         # Compute initial observation
         obs = self._compute_observation()
+        info = {}
+        return obs, info
 
-        return {"marine": obs}, {"marine": {}}
-
-    def step(
-        self, actions: dict[str, int]
-    ) -> tuple[
-        dict[str, np.ndarray],
-        dict[str, float],
-        dict[str, bool],
-        dict[str, bool],
-        dict[str, Any],
-    ]:
+    def step(self, action: int) -> tuple:
         """Execute one environment step."""
         self.current_step += 1
 
         # If episode already ended, return terminal state without stepping the game
         if self._episode_ended:
             obs = self._compute_observation()
-            return (
-                {"marine": obs},
-                {"marine": 0.0},
-                {"marine": True},
-                {"marine": False},
-                {"marine": {"won": False}},
-            )
+            return obs, 0.0, True, False, {"won": False}
 
         # Store previous HP for reward computation
         self.prev_marine_hp = self.marine.health if self.marine else 0.0
         self.prev_zergling_hp = self.zergling.health if self.zergling else 0.0
 
-        # Execute Marine action
-        marine_action = actions.get("marine", ACTION_STAY)
-        self._execute_marine_action(marine_action)
-
-        # Step the game simulation
-        self.game.step()
+        self._agent_action(action)
+        self.game.step(count=self.GAME_STEPS_PER_ENV_STEP)
 
         # Get updated unit states
         self.marine, self.zergling = self._get_units()
@@ -369,62 +331,7 @@ class SC2EpisodeEnvironment(pettingzoo.ParallelEnv):
         if terminated or truncated:
             self._episode_ended = True
 
-        return (
-            {"marine": obs},
-            {"marine": reward},
-            {"marine": terminated},
-            {"marine": truncated},
-            {"marine": {"won": zergling_dead and not marine_dead}},
-        )
+        return obs, reward, terminated, truncated, {"won": zergling_dead and not marine_dead}
 
     def close(self) -> None:
         self.game.close()
-
-
-
-
-
-class SC2GymEnv(gym.Env):
-    """
-    Gymnasium-compatible wrapper for the SC2 Marine vs Zergling environment.
-
-    This wrapper extracts the single "marine" agent from the PettingZoo env
-    and presents it as a standard Gymnasium environment for use with SB3.
-    """
-
-    metadata = {"render_modes": []}
-
-    def __init__(self) -> None:
-        super().__init__()
-
-        # Create the underlying PettingZoo environment
-        self._env = SC2EpisodeEnvironment()
-
-        # Extract spaces for the marine agent
-        self.observation_space = self._env.observation_space("marine")
-        self.action_space = self._env.action_space("marine")
-
-    def reset(
-        self, *, seed: int | None = None, options: dict[str, Any] | None = None
-    ) -> tuple[np.ndarray, dict[str, Any]]:
-        """Reset the environment."""
-        super().reset(seed=seed, options=options)
-        obs_dict, info_dict = self._env.reset(seed=seed, options=options)
-        return obs_dict["marine"], info_dict.get("marine", {})
-
-    def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
-        """Execute one step."""
-        obs_dict, reward_dict, term_dict, trunc_dict, info_dict = self._env.step(
-            {"marine": action}
-        )
-        return (
-            obs_dict["marine"],
-            reward_dict["marine"],
-            term_dict["marine"],
-            trunc_dict["marine"],
-            info_dict.get("marine", {}),
-        )
-
-    def close(self) -> None:
-        """Clean up resources."""
-        self._env.close()
