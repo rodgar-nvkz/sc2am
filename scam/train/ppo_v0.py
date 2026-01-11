@@ -23,7 +23,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from stable_baselines3.ppo import MlpPolicy
 
-from scam.envs.gym import SC2GymEnv
+from scam.envs.gym_v0 import SC2GymEnv
 
 
 def make_env_fn(env_id: int):
@@ -95,20 +95,19 @@ def train(steps: int = 100_000, seed: int = 42, num_envs: int = 10, resume: str 
             MlpPolicy,
             env,
             verbose=1,
-            learning_rate=5e-4,
+            learning_rate=3e-4,
             n_steps=2048,
-            batch_size=256,
-            n_epochs=10,
+            batch_size=64,
+            n_epochs=4,
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
-            ent_coef=0.01,
-            vf_coef=1.0,
+            ent_coef=0.05,
+            vf_coef=0.5,
             max_grad_norm=0.5,
-            # target_kl=0.015,
             device="cpu",
             tensorboard_log="./artifacts/logs/marine_vs_zergling/",
-            policy_kwargs={"net_arch": [128, 128, 64]},
+            policy_kwargs={"net_arch": [32, 32]},
         )
         logger.info("Initialized new PPO model")
 

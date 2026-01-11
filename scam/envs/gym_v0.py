@@ -188,8 +188,8 @@ class SC2GymEnv(gym.Env):
         distance_norm = min(1.0, distance / 20.0)
 
         # Health (normalized)
-        own_health = marine.health / MARINE_MAX_HP
-        enemy_health = zergling.health / ZERGLING_MAX_HP
+        own_health = marine.health / marine.health_max
+        enemy_health = zergling.health / zergling.health_max
 
         # Angle to enemy (normalized to [-1, 1])
         angle_norm = marine.angle_to(zergling) / math.pi
@@ -197,8 +197,8 @@ class SC2GymEnv(gym.Env):
         # In attack range (binary)
         in_range = 1.0 if distance <= MARINE_RANGE else 0.0
 
-        # Weapon ready (binary) - cooldown is in game loops, 0 means ready
-        weapon_ready = 1.0 if marine.weapon_cooldown <= 0 else 0.0
+        # Weapon cooldown normalized (marine cooldown is ~15 game loops)
+        weapon_cooldown_norm = min(1.0, marine.weapon_cooldown / 15.0)
 
         return np.array(
             [
@@ -209,7 +209,7 @@ class SC2GymEnv(gym.Env):
                 enemy_health,
                 angle_norm,
                 in_range,
-                weapon_ready,
+                weapon_cooldown_norm,
             ],
             dtype=np.float32,
         )
@@ -222,7 +222,7 @@ class SC2GymEnv(gym.Env):
         if not self.units[2]:
             win_bonus = 1.0
             hp_left_bonus = (
-                0.5 * (self.units[1][0].health / self.units[1][0].health_max)
+                self.units[1][0].health / self.units[1][0].health_max
                 if self.units[1]
                 else 0.0
             )
@@ -246,9 +246,7 @@ class SC2GymEnv(gym.Env):
         else:
             raise ValueError(f"Invalid action: {action}")
 
-    def reset(
-        self, *, seed: int | None = None, options: dict[str, Any] | None = None
-    ) -> tuple[np.ndarray, dict[str, Any]]:
+    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         self.current_step = 0
         self.clean_battlefield()
         self.prepare_battlefield()

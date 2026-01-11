@@ -34,22 +34,5 @@ SC2AM prioritizes RL needs providing Gymnasium-native interface, lean state extr
 - Quality Diversity (MAP-Elites)
 
 
-
-APPO RLLib
-1 env Steps/s: 730
-2 envs Steps/s: 1340
-4 envs Steps/s: 2230
-8 envs Steps/s: 3300
-
-PPO GPU
-1 envs fps 420
-4 envs fps 1320
-8 Envs fps 1880
-
-PPO CPU
-1 envs fps 630
-4 envs fps 1700
-8 Envs fps 2400
-
-
-PPO x4: CPU 900, GPU 2000
+## Progress
+* 20260111: gym_v0 / ppo_v0 Win rate: 20/20 (100.0%) Average reward: 1.75
