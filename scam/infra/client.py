@@ -1,13 +1,15 @@
 from dataclasses import dataclass
 
 import websocket
-from loguru import logger
 from portpicker import PickUnusedPort
 from s2clientprotocol import raw_pb2 as raw
 from s2clientprotocol import sc2api_pb2 as pb
 from s2clientprotocol.common_pb2 import Point2D, Race
-from s2clientprotocol.debug_pb2 import DebugCommand, DebugCreateUnit, DebugKillUnit
-from torch.fx.experimental.symbolic_shapes import Result
+from s2clientprotocol.debug_pb2 import (
+    DebugCommand,
+    DebugCreateUnit,
+    DebugKillUnit,
+)
 
 
 @dataclass
@@ -100,6 +102,11 @@ class SC2ClientProtocol:
         if not unit_tags:
             return pb.ResponseDebug()
         command = DebugCommand(kill_unit=DebugKillUnit(tag=unit_tags))
+        return self.send(debug=pb.RequestDebug(debug=[command])).debug
+
+    def research_upgrades(self) -> pb.ResponseDebug:
+        """Calling multiple times unlocks progressive upgrades (e.g., +1, then +2, then +3)"""
+        command = DebugCommand(game_state="upgrade")
         return self.send(debug=pb.RequestDebug(debug=[command])).debug
 
     def spawn_units(self, unit_type: int, pos: tuple[float, float], owner: int, quantity: int = 1) -> pb.ResponseDebug:
