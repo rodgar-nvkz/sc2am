@@ -69,27 +69,25 @@ DIRECTION_VECTORS = {
 MOVE_STEP_SIZE = 2.0
 
 # Environment constants
-MAX_EPISODE_STEPS = 22.4 * 10  # 10 realtime seconds
+MAX_EPISODE_STEPS = 22.4 * 30  # 30 realtime seconds
 
 # Spawn configuration
 SPAWN_AREA_MIN = 0.0 + 14
 SPAWN_AREA_MAX = 32.0 - 14
-MIN_SPAWN_DISTANCE = 7.0
-MAX_SPAWN_DISTANCE = 8.0
+MIN_SPAWN_DISTANCE = 6.0
+MAX_SPAWN_DISTANCE = 9.0
 
 # Number of zerglings
 NUM_ZERGLINGS = 2
 
-# Upgrade IDs for Terran Infantry Weapons
-UPGRADE_INFANTRY_WEAPONS_1 = 7
-UPGRADE_INFANTRY_WEAPONS_2 = 8
-UPGRADE_INFANTRY_WEAPONS_3 = 9
-
 # Observation space size:
-# Marine: own_health (1), weapon_cooldown (1) = 2
+# Marine: own_health (1), weapon_cooldown (1), upgrade level one-hot (3) = 5
 # Per zergling (x2): rel_x (1), rel_y (1), distance (1), health (1), angle (1), in_range (1) = 6
-# Total: 2 + 6*2 = 14
-OBS_SIZE = 14
+# Total: 5 + 6*2 = 17
+OBS_SIZE = 17
+
+# Reward scaling by difficulty (harder difficulties get higher rewards)
+DIFFICULTY_REWARD_SCALE = {0: 3.0, 1: 2.0, 2: 1.0}
 
 
 @dataclass
@@ -127,8 +125,9 @@ class SC2GymEnv(gym.Env):
 
     metadata = {"name": "sc2_mv2z_v1", "render_modes": []}
 
-    def __init__(self, env_ctx: dict | None = None) -> None:
+    def __init__(self, params = None) -> None:
         super().__init__()
+        self.params = params or {}
 
         self.action_space = spaces.Discrete(NUM_ACTIONS)
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(OBS_SIZE,), dtype=np.float32)
@@ -139,21 +138,15 @@ class SC2GymEnv(gym.Env):
         self.current_step: int = 0
         self.terminated: bool = False
 
-        env_ctx = env_ctx or {}
-        self.game_steps_per_env = env_ctx.get("game_steps_per_env") or 1
+        self.upgrade_level = random.choice(self.params.get("upgrade_level", [0, 1, 2]))
+        self.game_steps_per_env = random.choice(self.params.get("game_steps_per_env", [2]))
+        self.init_game()
 
-    def get_upgrade_level(self) -> int:
-        """Get current infantry weapons upgrade level (0-3)."""
-        obs = self.client.get_observation()
-        upgrade_ids = set(obs.observation.raw_data.player.upgrade_ids)
-        logger.debug(f"Current upgrades: {upgrade_ids}")
-        if UPGRADE_INFANTRY_WEAPONS_3 in upgrade_ids:
-            return 3
-        if UPGRADE_INFANTRY_WEAPONS_2 in upgrade_ids:
-            return 2
-        if UPGRADE_INFANTRY_WEAPONS_1 in upgrade_ids:
-            return 1
-        return 0
+    def init_game(self) -> None:
+        logger.info(f"Initializing SC2GymEnv with params: {self.params}")
+        for _ in range(self.upgrade_level):
+            self.client.research_upgrades()
+            self.game.step(count=5)  # allow time for upgrade to complete
 
     def observe_units(self) -> None:
         self.units = defaultdict(list)
@@ -164,9 +157,6 @@ class SC2GymEnv(gym.Env):
             unit_state = UnitState.from_proto(unit)
             self.units[unit.owner].append(unit_state)
 
-        # Sort zerglings by tag to ensure consistent ordering across observations
-        self.units[2].sort(key=lambda u: u.tag)
-
         self.terminated = not all((self.units[1], self.units[2]))
         logger.debug(
             f"Marine alive: {len(self.units[1])}, Zerglings alive: {len(self.units[2])}, episode ended: {self.terminated}"
@@ -176,26 +166,23 @@ class SC2GymEnv(gym.Env):
         units = sum(self.units.values(), [])
         unit_tags = [u.tag for u in units]
         self.client.kill_units(unit_tags)
-        self.game.reset_map()
+        if self.game.reset_map():
+            self.init_game()
 
     def prepare_battlefield(self) -> None:
         logger.debug("Spawning units")
-
-        for _ in range(max(0 - self.get_upgrade_level(), 0)):
-            logger.debug(f"Researching infantry weapons upgrade from level {self.get_upgrade_level()}")
-            self.client.research_upgrades()
 
         # Random position for marine
         marine_x = random.uniform(SPAWN_AREA_MIN, SPAWN_AREA_MAX)
         marine_y = random.uniform(SPAWN_AREA_MIN, SPAWN_AREA_MAX)
         self.client.spawn_units(UNIT_MARINE, (marine_x, marine_y), owner=1, quantity=1)
 
-        # Zerglings spawn at random distance/angle from marine (both at same position)
+        # Spawn first zergling at random distance/angle from marine
         spawn_distance = random.uniform(MIN_SPAWN_DISTANCE, MAX_SPAWN_DISTANCE)
         spawn_angle = random.uniform(0, 2 * math.pi)
         ling_x = marine_x + spawn_distance * math.cos(spawn_angle)
         ling_y = marine_y + spawn_distance * math.sin(spawn_angle)
-        # Spawn 2 zerglings at the same position
+        # Spawn 2 zergling nearby
         self.client.spawn_units(UNIT_ZERGLING, (ling_x, ling_y), owner=2, quantity=1)
         shift_x = random.randint(-2500, 2500) / 1000.0
         shift_y = random.randint(-2500, 2500) / 1000.0
@@ -205,11 +192,9 @@ class SC2GymEnv(gym.Env):
 
         self.observe_units()
         assert len(self.units[1]) == 1, "Marine not spawned correctly"
-        assert len(self.units[2]) == NUM_ZERGLINGS, f"Expected {NUM_ZERGLINGS} Zerglings, got {len(self.units[2])}"
+        assert len(self.units[2]) == 2, f"Expected 2 Zerglings, got {len(self.units[2])}"
 
-        logger.debug(
-            f"Spawned Marine at ({marine_x:.2f}, {marine_y:.2f}) and {NUM_ZERGLINGS} Zerglings at ({ling_x:.2f}, {ling_y:.2f})"
-        )
+        logger.debug("Spawned Marine and 2 Zerglings")
 
     def _get_zergling_obs(self, marine: UnitState, zergling: UnitState | None) -> list[float]:
         """Get observation features for a single zergling relative to marine."""
@@ -241,16 +226,19 @@ class SC2GymEnv(gym.Env):
         return [rel_x, rel_y, distance_norm, enemy_health, angle_norm, in_range]
 
     def _compute_observation(self) -> np.ndarray:
-        """Compute the observation vector for the Marine agent."""
         if not self.units[1]:
             return np.zeros(OBS_SIZE, dtype=np.float32)
 
         marine = self.units[1][0]
-        zerglings = self.units[2]  # Already sorted by tag
+        zerglings = self.units[2]
 
         # Marine's own state
         own_health = marine.health / marine.health_max
         weapon_cooldown_norm = min(1.0, marine.weapon_cooldown / 15.0)
+
+        # One-hot encode upgrade level (0, 1, or 2)
+        upgrade_one_hot = [0.0, 0.0, 0.0]
+        upgrade_one_hot[self.upgrade_level] = 1.0
 
         # Get zergling observations (pad with None if dead)
         z1 = zerglings[0] if len(zerglings) > 0 else None
@@ -259,12 +247,18 @@ class SC2GymEnv(gym.Env):
         z1_obs = self._get_zergling_obs(marine, z1)
         z2_obs = self._get_zergling_obs(marine, z2)
 
-        obs = [own_health, weapon_cooldown_norm, *z1_obs, *z2_obs]
+        obs = [own_health, weapon_cooldown_norm, *upgrade_one_hot, *z1_obs, *z2_obs]
 
         return np.array(obs, dtype=np.float32)
 
     def _compute_reward(self) -> float:
-        """Compute reward based on damage dealt/taken and terminal conditions."""
+        """Compute reward based on damage dealt/taken and terminal conditions.
+
+        Rewards are scaled by difficulty - harder difficulties (lower upgrade_level)
+        receive higher rewards to balance gradient signal in mixed-difficulty training.
+        """
+        difficulty_bonus = DIFFICULTY_REWARD_SCALE[self.upgrade_level]
+
         if self.current_step >= MAX_EPISODE_STEPS:
             return -1.0  # Timeout penalty
 
@@ -275,28 +269,23 @@ class SC2GymEnv(gym.Env):
                 if self.units[1]
                 else 0.0
             )
-            return win_bonus + hp_left_bonus * 10.0
+            return (win_bonus + hp_left_bonus * 10.0) + difficulty_bonus
         return 0.0
 
     def _agent_action(self, action: int) -> None:
         logger.debug(f"Agent action: {action}")
         marine = self.units[1][0]
-        zerglings = self.units[2]  # Already sorted by tag
+        zerglings = self.units[2]
 
         if action == ACTION_ATTACK_Z1:
             if len(zerglings) > 0:
                 self.client.unit_attack_unit(marine.tag, zerglings[0].tag)
-            else:
-                # Z1 is dead, stop instead
+            else:  # Z1 is dead, stop instead
                 self.client.unit_stop(marine.tag)
         elif action == ACTION_ATTACK_Z2:
             if len(zerglings) > 1:
                 self.client.unit_attack_unit(marine.tag, zerglings[1].tag)
-            elif len(zerglings) > 0:
-                # Z2 is dead, attack Z1 instead
-                self.client.unit_attack_unit(marine.tag, zerglings[0].tag)
-            else:
-                # Both dead, stop
+            else:  # Both dead, stop
                 self.client.unit_stop(marine.tag)
         elif action == ACTION_STAY:
             self.client.unit_stop(marine.tag)
@@ -317,15 +306,15 @@ class SC2GymEnv(gym.Env):
     def step(self, action: np.ndarray) -> tuple:
         logger.debug(f"Environment step {self.current_step} with action {action}")
 
-        self.observe_units()
         if not self.terminated:
             self._agent_action(action.item())
             self.game.step(count=self.game_steps_per_env)
-            self.current_step += 1
+            self.current_step += self.game_steps_per_env
 
-        truncated = self.current_step >= MAX_EPISODE_STEPS
+        self.observe_units()
         obs = self._compute_observation()
         reward = self._compute_reward()
+        truncated = self.current_step >= MAX_EPISODE_STEPS
         return obs, reward, self.terminated, truncated, {"won": reward > 0}
 
     def close(self) -> None:

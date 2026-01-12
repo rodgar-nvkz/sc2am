@@ -38,7 +38,7 @@ class SC2SingleGame:
         self.game_step += count
         return self.clients[0].step(count).simulation_loop
 
-    def reset_map(self) -> None:
+    def reset_map(self) -> bool:
         """Reset the current game if it is required"""
         if self.game_step >= self.SAFE_GAME_STEPS:
             logger.info(
@@ -46,6 +46,8 @@ class SC2SingleGame:
             )
             self.clients[0].restart_game()
             self.game_step = 0
+            return True
+        return False
 
     def perf(self, seconds: int = 5, obs: bool = False) -> None:
         steps, start = 0, time.time()

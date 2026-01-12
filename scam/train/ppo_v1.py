@@ -96,7 +96,7 @@ def train(steps: int = 100_000, seed: int = 42, num_envs: int = 10, resume: str 
             env,
             verbose=1,
             learning_rate=1e-4,
-            n_steps=2048,
+            n_steps=1024,
             batch_size=256,
             n_epochs=4,
             gamma=0.99,
@@ -107,7 +107,7 @@ def train(steps: int = 100_000, seed: int = 42, num_envs: int = 10, resume: str 
             max_grad_norm=0.5,
             device="cpu",
             tensorboard_log="./artifacts/logs/marine_vs_2zerglings/",
-            policy_kwargs={"net_arch": [32, 32]},
+            policy_kwargs={"net_arch": [48, 32]},
         )
         logger.info("Initialized new PPO model")
 
@@ -134,7 +134,7 @@ def train(steps: int = 100_000, seed: int = 42, num_envs: int = 10, resume: str 
 
 def eval(num_games: int = 10, model_path: str | None = None):
     """Evaluate a trained agent and save replays of best/worst games."""
-    env = SC2GymEnv({"game_steps_per_env": 1})
+    env = SC2GymEnv({"upgrade_level": [0], "game_steps_per_env": [1]})
 
     # Find latest model if not specified
     if model_path is None:
