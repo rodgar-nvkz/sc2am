@@ -5,11 +5,7 @@ from portpicker import PickUnusedPort
 from s2clientprotocol import raw_pb2 as raw
 from s2clientprotocol import sc2api_pb2 as pb
 from s2clientprotocol.common_pb2 import Point2D, Race
-from s2clientprotocol.debug_pb2 import (
-    DebugCommand,
-    DebugCreateUnit,
-    DebugKillUnit,
-)
+from s2clientprotocol.debug_pb2 import DebugCommand, DebugCreateUnit, DebugKillUnit
 
 
 @dataclass

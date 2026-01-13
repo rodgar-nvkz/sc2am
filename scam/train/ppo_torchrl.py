@@ -25,7 +25,7 @@ import torch
 import torch.nn as nn
 from loguru import logger
 from tensordict.nn import TensorDictModule
-from torchrl.collectors import MultiSyncDataCollector, SyncDataCollector
+from torchrl.collectors import SyncDataCollector
 from torchrl.data import LazyTensorStorage, TensorDictReplayBuffer
 from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
 from torchrl.envs import EnvCreator, ParallelEnv, RewardSum, StepCounter, TransformedEnv
@@ -109,7 +109,8 @@ def train(steps: int, seed: int, num_envs: int, resume: str | None = None):
     np.random.seed(seed)
 
     # Device setup
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
     print(f"Using device: {device}")
 
     # Hyperparameters
@@ -138,19 +139,11 @@ def train(steps: int, seed: int, num_envs: int, resume: str | None = None):
         frames_per_batch=frames_per_batch,
         total_frames=total_frames,
         device=device,
-        # storing_device=device,
+        storing_device=device,
         max_frames_per_traj=-1,
-        compile_policy={"mode": "default", "warmup": 5},
-        cudagraph_policy={"warmup": 10},
+        # compile_policy={"mode": "default", "warmup": 5},
+        # cudagraph_policy={"warmup": 10},
     )
-    # collector = MultiSyncDataCollector(
-    #     create_env_fn=[make_env] * num_envs,  # Each gets its own collector
-    #     policy=actor,
-    #     frames_per_batch=frames_per_batch,
-    #     total_frames=total_frames,
-    #     device=device,
-    #     cat_results="stack",  # or None for list
-    # )
 
     # Create replay buffer
     sampler = SamplerWithoutReplacement()
