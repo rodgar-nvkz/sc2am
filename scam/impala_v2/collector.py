@@ -1,5 +1,5 @@
 import signal
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -32,6 +32,80 @@ class Rollout:
 
 
 @dataclass
+class RolloutBatch:
+    """Pre-allocated batch of rollouts, ready to convert to tensors without stacking."""
+    observations: np.ndarray           # (B, T, obs_size)
+    commands: np.ndarray               # (B, T)
+    angles: np.ndarray                 # (B, T, 2)
+    rewards: np.ndarray                # (B, T)
+    dones: np.ndarray                  # (B, T)
+    behavior_cmd_log_probs: np.ndarray # (B, T)
+    behavior_angle_log_probs: np.ndarray # (B, T)
+    behavior_values: np.ndarray        # (B, T)
+    next_observations: np.ndarray      # (B, obs_size)
+    weight_versions: np.ndarray        # (B,) weight version used for each rollout
+
+    episode_returns: list = field(default_factory=list)
+    episode_lengths: list = field(default_factory=list)
+
+    _count: int = 0
+    _capacity: int = 0
+
+    @classmethod
+    def create(cls, batch_size: int, rollout_length: int, obs_size: int) -> "RolloutBatch":
+        """Pre-allocate arrays for the full batch."""
+        batch = cls(
+            observations=np.empty((batch_size, rollout_length, obs_size), dtype=np.float32),
+            commands=np.empty((batch_size, rollout_length), dtype=np.int64),
+            angles=np.empty((batch_size, rollout_length, 2), dtype=np.float32),
+            rewards=np.empty((batch_size, rollout_length), dtype=np.float32),
+            dones=np.empty((batch_size, rollout_length), dtype=bool),
+            behavior_cmd_log_probs=np.empty((batch_size, rollout_length), dtype=np.float32),
+            behavior_angle_log_probs=np.empty((batch_size, rollout_length), dtype=np.float32),
+            behavior_values=np.empty((batch_size, rollout_length), dtype=np.float32),
+            next_observations=np.empty((batch_size, obs_size), dtype=np.float32),
+            weight_versions=np.empty(batch_size, dtype=np.int64),
+        )
+        batch._capacity = batch_size
+        return batch
+
+    def insert(self, rollout: Rollout):
+        """Insert a rollout at the next available slot."""
+        i = self._count
+        self.observations[i] = rollout.observations
+        self.commands[i] = rollout.commands
+        self.angles[i] = rollout.angles
+        self.rewards[i] = rollout.rewards
+        self.dones[i] = rollout.dones
+        self.behavior_cmd_log_probs[i] = rollout.behavior_cmd_log_probs
+        self.behavior_angle_log_probs[i] = rollout.behavior_angle_log_probs
+        self.behavior_values[i] = rollout.behavior_values
+        self.next_observations[i] = rollout.next_observation
+        self.weight_versions[i] = rollout.weight_version
+
+        self.episode_returns.extend(rollout.episode_returns)
+        self.episode_lengths.extend(rollout.episode_lengths)
+        self._count += 1
+
+    def is_full(self) -> bool:
+        return self._count >= self._capacity
+
+    def to_tensors(self, device: torch.device) -> dict[str, torch.Tensor]:
+        """Convert to tensors - no stacking needed!"""
+        return {
+            "observations": torch.from_numpy(self.observations).to(device),
+            "commands": torch.from_numpy(self.commands).to(device),
+            "angles": torch.from_numpy(self.angles).to(device),
+            "rewards": torch.from_numpy(self.rewards).to(device),
+            "dones": torch.from_numpy(self.dones).to(device),
+            "behavior_cmd_log_probs": torch.from_numpy(self.behavior_cmd_log_probs).to(device),
+            "behavior_angle_log_probs": torch.from_numpy(self.behavior_angle_log_probs).to(device),
+            "behavior_values": torch.from_numpy(self.behavior_values).to(device),
+            "next_observations": torch.from_numpy(self.next_observations).to(device),
+        }
+
+
+@dataclass
 class RolloutResult:
     """Result of collect_rollout including continuation state."""
     rollout: Rollout
@@ -47,7 +121,7 @@ def collector_worker(worker_id: int, rollout_queue: Any, shared_weights: SharedW
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     try:
-        env = SC2GymEnv({"upgrade_level": config.upgrade_levels, "game_steps_per_env": config.game_steps_per_env})
+        env = SC2GymEnv({"upgrade_level": config.upgrade_levels})
         model = ActorCritic(OBS_SIZE, NUM_COMMANDS)
         model.eval()
 
@@ -108,14 +182,18 @@ def collect_rollout(
 ) -> RolloutResult:
     """Collect a single rollout of fixed length with hybrid actions."""
 
-    observations = []
-    commands = []
-    angles = []
-    rewards = []
-    dones = []
-    cmd_log_probs = []
-    angle_log_probs = []
-    values = []
+    obs_size = obs.shape[0]
+
+    # Pre-allocate arrays (more efficient than list append -> convert)
+    observations = np.empty((rollout_length, obs_size), dtype=np.float32)
+    commands = np.empty(rollout_length, dtype=np.int64)
+    angles = np.empty((rollout_length, 2), dtype=np.float32)
+    rewards = np.empty(rollout_length, dtype=np.float32)
+    dones = np.empty(rollout_length, dtype=bool)
+    cmd_log_probs = np.empty(rollout_length, dtype=np.float32)
+    angle_log_probs = np.empty(rollout_length, dtype=np.float32)
+    values = np.empty(rollout_length, dtype=np.float32)
+
     episode_returns = []
     episode_lengths = []
 
@@ -124,8 +202,8 @@ def collect_rollout(
     next_done = False
 
     with torch.no_grad():
-        for _ in range(rollout_length):
-            observations.append(obs)
+        for t in range(rollout_length):
+            observations[t] = obs
 
             # Get action from policy (autoregressive sampling)
             obs_tensor = torch.from_numpy(obs).unsqueeze(0)
@@ -137,11 +215,11 @@ def collect_rollout(
             angle_log_prob = angle_log_prob.squeeze(0)
             value = value.squeeze(0) if value.dim() > 0 else value
 
-            commands.append(command.item())
-            angles.append(angle.numpy())
-            cmd_log_probs.append(cmd_log_prob.item())
-            angle_log_probs.append(angle_log_prob.item())
-            values.append(value.item())
+            commands[t] = command.item()
+            angles[t] = angle.numpy()
+            cmd_log_probs[t] = cmd_log_prob.item()
+            angle_log_probs[t] = angle_log_prob.item()
+            values[t] = value.item()
 
             # Create hybrid action dict for environment
             action = {'command': command.item(), 'angle': angle.numpy()}
@@ -150,8 +228,8 @@ def collect_rollout(
             obs, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
 
-            rewards.append(reward)
-            dones.append(done)
+            rewards[t] = reward
+            dones[t] = done
 
             current_episode_return += reward
             current_episode_length += 1
@@ -171,14 +249,14 @@ def collect_rollout(
     next_obs = obs
 
     rollout = Rollout(
-        observations=np.array(observations, dtype=np.float32),
-        commands=np.array(commands, dtype=np.int64),
-        angles=np.array(angles, dtype=np.float32),
-        rewards=np.array(rewards, dtype=np.float32),
-        dones=np.array(dones, dtype=bool),
-        behavior_cmd_log_probs=np.array(cmd_log_probs, dtype=np.float32),
-        behavior_angle_log_probs=np.array(angle_log_probs, dtype=np.float32),
-        behavior_values=np.array(values, dtype=np.float32),
+        observations=observations,
+        commands=commands,
+        angles=angles,
+        rewards=rewards,
+        dones=dones,
+        behavior_cmd_log_probs=cmd_log_probs,
+        behavior_angle_log_probs=angle_log_probs,
+        behavior_values=values,
         next_observation=next_obs.astype(np.float32),
         next_done=next_done,
         worker_id=worker_id,

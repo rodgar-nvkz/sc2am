@@ -5,7 +5,12 @@ from portpicker import PickUnusedPort
 from s2clientprotocol import raw_pb2 as raw
 from s2clientprotocol import sc2api_pb2 as pb
 from s2clientprotocol.common_pb2 import Point2D, Race
-from s2clientprotocol.debug_pb2 import DebugCommand, DebugCreateUnit, DebugKillUnit
+from s2clientprotocol.debug_pb2 import (
+    DebugCommand,
+    DebugCreateUnit,
+    DebugKillUnit,
+    DebugSetUnitValue,
+)
 
 
 @dataclass
@@ -103,6 +108,17 @@ class SC2ClientProtocol:
     def research_upgrades(self) -> pb.ResponseDebug:
         """Calling multiple times unlocks progressive upgrades (e.g., +1, then +2, then +3)"""
         command = DebugCommand(game_state="upgrade")
+        return self.send(debug=pb.RequestDebug(debug=[command])).debug
+
+    def set_unit_life(self, unit_tag: int, life: float) -> pb.ResponseDebug:
+        """Set unit health to a specific value (can exceed max health)"""
+        value = DebugSetUnitValue(unit_tag=unit_tag, unit_value=DebugSetUnitValue.Life, value=life)
+        command = DebugCommand(unit_value=value)
+        return self.send(debug=pb.RequestDebug(debug=[command])).debug
+
+    def enable_enemy_control(self) -> pb.ResponseDebug:
+        """Enable control of enemy units (allows issuing commands to opponent's units)"""
+        command = DebugCommand(game_state="control_enemy")
         return self.send(debug=pb.RequestDebug(debug=[command])).debug
 
     def spawn_units(self, unit_type: int, pos: tuple[float, float], owner: int, quantity: int = 1) -> pb.ResponseDebug:

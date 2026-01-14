@@ -258,10 +258,7 @@ def worker_process(
 
     try:
         # Create local environment (simple Gym-style API)
-        env = SC2GymEnv({
-            "upgrade_level": config.upgrade_levels,
-            "game_steps_per_env": config.game_steps_per_env,
-        })
+        env = SC2GymEnv({"upgrade_level": config.upgrade_levels})
 
         # Create local model
         model = ActorCritic()
@@ -495,7 +492,6 @@ def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[
         total_frames=total_frames,
         num_workers=num_workers,
         upgrade_levels = [1, 2],
-        game_steps_per_env = [2],
     )
     print(f"Config: {config}")
 
@@ -780,7 +776,7 @@ def eval_model(num_games: int = 10, model_path: Optional[str] = None):
     wins = 0
     total_rewards = []
     total_lengths = []
-    env = SC2GymEnv({"upgrade_level": [1], "game_steps_per_env": [2]})
+    env = SC2GymEnv({"upgrade_level": [1]})
 
     print(f"\nEvaluating for {num_games} games...")
 

@@ -34,16 +34,13 @@ import torch.nn.functional as F
 from loguru import logger
 
 from scam.envs.impala_v2 import ACTION_MOVE, NUM_COMMANDS, OBS_SIZE
-from scam.impala_v2.collector import Rollout, collector_worker
+from scam.impala_v2.collector import RolloutBatch, collector_worker
 from scam.impala_v2.config import IMPALAConfig
 from scam.impala_v2.eval import eval_model
 from scam.impala_v2.interop import SharedWeights
 from scam.impala_v2.model import ActorCritic
 from scam.train.impala import compute_vtrace
 
-# ============================================================================
-# Training
-# ============================================================================
 
 def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[str] = None):
     """Main training loop."""
@@ -53,7 +50,7 @@ def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[
     device = torch.device("cpu")
     print(f"Using device: {device}")
 
-    config = IMPALAConfig(total_frames=total_frames, num_workers=num_workers, upgrade_levels=[0, 1, 2])
+    config = IMPALAConfig(total_frames=total_frames, num_workers=num_workers, upgrade_levels=[1])
     model = ActorCritic(OBS_SIZE, NUM_COMMANDS).to(device)
     if resume:
         print(f"Resuming from checkpoint: {resume}")
@@ -92,21 +89,12 @@ def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[
 
     try:
         while collected_frames < total_frames:
-            rollouts = []
-            frames_this_batch = 0
-            target_frames = config.rollout_length * num_workers
+            rollout_batch = RolloutBatch.create(num_workers, config.rollout_length, OBS_SIZE)
 
-            while frames_this_batch < target_frames:
+            while not rollout_batch.is_full():
                 try:
                     rollout = rollout_queue.get(timeout=60.0)
-                    rollouts.append(rollout)
-                    frames_this_batch += len(rollout.rewards)
-
-                    # Track episode statistics
-                    for ret in rollout.episode_returns:
-                        episode_returns.append(ret)
-                    for length in rollout.episode_lengths:
-                        episode_lengths.append(length)
+                    rollout_batch.insert(rollout)
 
                 except Exception as e:
                     logger.warning(f"Timeout waiting for rollouts: {e}")
@@ -115,10 +103,11 @@ def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[
                         raise RuntimeError("All workers have died!")
                     continue
 
-            collected_frames += frames_this_batch
-
-            # Convert rollouts to tensors
-            batch = prepare_batch(rollouts, device)
+            # Track episode statistics
+            episode_returns += rollout_batch.episode_returns
+            episode_lengths += rollout_batch.episode_lengths
+            collected_frames += rollout_batch._count * config.rollout_length
+            batch = rollout_batch.to_tensors(device)
 
             # Compute V-trace targets with current policy
             model.eval()
@@ -237,7 +226,7 @@ def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[
             win_rate = np.mean([r > 0 for r in episode_returns]) * 100 if episode_returns else 0.0
 
             # Weight staleness (how old are the weights workers are using)
-            avg_staleness = np.mean([shared_weights.get_version() - r.weight_version for r in rollouts])
+            avg_staleness = np.mean(shared_weights.get_version() - rollout_batch.weight_versions)
 
             print(
                 f"Update {update_count:4d} | "
@@ -290,20 +279,6 @@ def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[
     return str(model_path)
 
 
-def prepare_batch(rollouts: list[Rollout], device: torch.device) -> dict[str, torch.Tensor]:
-    """Convert list of rollouts into batched tensors, stacking all rollouts (B, T, ...)"""
-    return {
-        "observations": torch.tensor(np.stack([r.observations for r in rollouts]), dtype=torch.float32, device=device),
-        "commands": torch.tensor(np.stack([r.commands for r in rollouts]), dtype=torch.long, device=device),
-        "angles": torch.tensor(np.stack([r.angles for r in rollouts]), dtype=torch.float32, device=device),
-        "rewards": torch.tensor(np.stack([r.rewards for r in rollouts]), dtype=torch.float32, device=device),
-        "dones": torch.tensor(np.stack([r.dones for r in rollouts]), dtype=torch.bool, device=device),
-        "behavior_cmd_log_probs": torch.tensor(np.stack([r.behavior_cmd_log_probs for r in rollouts]), dtype=torch.float32, device=device),
-        "behavior_angle_log_probs": torch.tensor(np.stack([r.behavior_angle_log_probs for r in rollouts]), dtype=torch.float32, device=device),
-        "behavior_values": torch.tensor(np.stack([r.behavior_values for r in rollouts]), dtype=torch.float32, device=device),
-        "next_observations": torch.tensor(np.stack([r.next_observation for r in rollouts]), dtype=torch.float32, device=device),
-    }
-
 
 # ============================================================================
 # CLI
@@ -316,7 +291,7 @@ def main():
     # Train command
     train_parser = subparsers.add_parser("train", help="Train a new agent")
     train_parser.add_argument("--steps", type=int, default=1_000_000, help="Total training frames")
-    train_parser.add_argument("--num-workers", type=int, default=8, help="Number of worker processes")
+    train_parser.add_argument("--num-workers", type=int, default=10, help="Number of worker processes")
     train_parser.add_argument("--seed", type=int, default=42, help="Random seed")
     train_parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
 

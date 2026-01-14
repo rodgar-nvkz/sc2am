@@ -13,7 +13,7 @@ from scam.impala_v2.model import ActorCritic
 from scam.settings import PROJECT_ROOT
 
 
-def eval_model(num_games: int = 10, model_path: Optional[str] = None, upgrade_level: int = 2):
+def eval_model(num_games: int = 10, model_path: Optional[str] = None, upgrade_level: int = 0):
     """Evaluate a trained model with hybrid action space."""
     device = torch.device("cpu")
 
