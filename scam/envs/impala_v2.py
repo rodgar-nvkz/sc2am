@@ -141,7 +141,7 @@ class SC2GymEnv(gym.Env):
         self._reference_angle: float = 0.0
 
         self.upgrade_level = random.choice(self.params.get("upgrade_level", [0, 1, 2]))
-        self.game_steps_per_env = random.choice(self.params.get("game_steps_per_env", [2]))
+        self.game_steps_per_env = random.choice(self.params.get("game_steps_per_env", [1]))
         self.init_game()
 
     def init_game(self) -> None:
