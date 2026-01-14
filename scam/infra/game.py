@@ -31,7 +31,7 @@ class SC2SingleGame:
         players += [SC2Client.player(r, False) for r in self.races[1:]]
         self.clients[0].host_game(next(self.maps), players=players)
         self.clients[0].join_game(self.races[0])
-        logger.info("Single player have joined the game")
+        logger.debug("Single player have joined the game")
         return self
 
     def step(self, count: int = 1) -> int:

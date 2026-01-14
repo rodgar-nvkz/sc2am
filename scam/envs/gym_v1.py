@@ -86,9 +86,6 @@ NUM_ZERGLINGS = 2
 # Total: 5 + 6*2 = 17
 OBS_SIZE = 17
 
-# Reward scaling by difficulty (harder difficulties get higher rewards)
-DIFFICULTY_REWARD_SCALE = {0: 3.0, 1: 2.0, 2: 1.0}
-
 
 @dataclass
 class UnitState:
@@ -156,6 +153,9 @@ class SC2GymEnv(gym.Env):
                 continue
             unit_state = UnitState.from_proto(unit)
             self.units[unit.owner].append(unit_state)
+
+        for units in self.units.values():
+            units.sort(key=lambda u: u.tag)
 
         self.terminated = not all((self.units[1], self.units[2]))
         logger.debug(
@@ -252,24 +252,16 @@ class SC2GymEnv(gym.Env):
         return np.array(obs, dtype=np.float32)
 
     def _compute_reward(self) -> float:
-        """Compute reward based on damage dealt/taken and terminal conditions.
-
-        Rewards are scaled by difficulty - harder difficulties (lower upgrade_level)
-        receive higher rewards to balance gradient signal in mixed-difficulty training.
-        """
-        difficulty_bonus = DIFFICULTY_REWARD_SCALE[self.upgrade_level]
+        """Compute reward based on damage dealt/taken and terminal conditions"""
 
         if self.current_step >= MAX_EPISODE_STEPS:
-            return -1.0  # Timeout penalty
+            return -2.0
 
-        if not self.units[2]:  # All zerglings dead - win!
-            win_bonus = 1.0
-            hp_left_bonus = (
-                self.units[1][0].health / self.units[1][0].health_max
-                if self.units[1]
-                else 0.0
-            )
-            return (win_bonus + hp_left_bonus * 10.0) + difficulty_bonus
+        if not self.units[1] or not self.units[2]:
+            ally_health = sum([u.health / u.health_max for u in self.units[1]], 0.0) / 1.0
+            enemy_health = sum([u.health / u.health_max for u in self.units[2]], 0.0) / 2.0
+            return ally_health  - enemy_health
+
         return 0.0
 
     def _agent_action(self, action: int) -> None:
@@ -303,11 +295,11 @@ class SC2GymEnv(gym.Env):
         self.prepare_battlefield()
         return self._compute_observation(), {}
 
-    def step(self, action: np.ndarray) -> tuple:
+    def step(self, action) -> tuple:
         logger.debug(f"Environment step {self.current_step} with action {action}")
 
         if not self.terminated:
-            self._agent_action(action.item())
+            self._agent_action(action)
             self.game.step(count=self.game_steps_per_env)
             self.current_step += self.game_steps_per_env
 
