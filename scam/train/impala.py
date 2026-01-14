@@ -23,6 +23,7 @@ Usage:
 import argparse
 import ctypes
 import glob
+import multiprocessing as mp
 import os
 import signal
 import time
@@ -36,14 +37,11 @@ from typing import Optional
 
 import numpy as np
 import torch
-import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
 from loguru import logger
-from tensordict import TensorDict
-from torchrl.envs.utils import step_mdp
 
-from scam.envs.trl_v0 import NUM_ACTIONS, OBS_SIZE, SC2TRLEnv
+from scam.envs.gym_v1 import NUM_ACTIONS, OBS_SIZE, SC2GymEnv
 from scam.settings import PROJECT_ROOT
 
 # ============================================================================
@@ -76,17 +74,18 @@ class IMPALAConfig:
     max_grad_norm: float = 40.0
 
     # Optimizer
-    lr: float = 1e-4
+    lr: float = 5e-4
     lr_eps: float = 1e-4
     lr_start_factor: float = 1.0
-    lr_end_factor: float = 0.5
+    lr_end_factor: float = 0.2
 
     # Environment
     upgrade_levels: list = field(default_factory=list)
-    game_steps_per_env: int = 2
+    game_steps_per_env: list = field(default_factory=list)
 
     def __post_init__(self):
-        self.upgrade_levels = [2, ]
+        self.upgrade_levels = self.upgrade_levels or [1, 2]
+        self.game_steps_per_env = self.game_steps_per_env or [2, 4]
 
 
 
@@ -234,7 +233,7 @@ class Rollout:
 class RolloutResult:
     """Result of collect_rollout including continuation state."""
     rollout: Rollout
-    next_td: TensorDict           # Tensordict to continue from
+    next_obs: np.ndarray          # Observation to continue from
     current_episode_return: float # Accumulated return in ongoing episode
     current_episode_length: int   # Steps in ongoing episode
 
@@ -258,11 +257,11 @@ def worker_process(
     logger.info(f"Worker {worker_id} starting...")
 
     try:
-        # Create local environment (no transforms - we track stats manually)
-        env = SC2TRLEnv({
+        # Create local environment (simple Gym-style API)
+        env = SC2GymEnv({
             "upgrade_level": config.upgrade_levels,
-            "game_steps_per_env": [config.game_steps_per_env]
-        }, device="cpu")
+            "game_steps_per_env": config.game_steps_per_env,
+        })
 
         # Create local model
         model = ActorCritic()
@@ -273,7 +272,7 @@ def worker_process(
         logger.info(f"Worker {worker_id} initialized with weight version {local_version}")
 
         # Initialize environment
-        td = env.reset()
+        obs, _ = env.reset()
 
         # Track ongoing episode stats across rollouts
         ongoing_episode_return = 0.0
@@ -290,7 +289,7 @@ def worker_process(
             result = collect_rollout(
                 env=env,
                 model=model,
-                td=td,
+                obs=obs,
                 rollout_length=config.rollout_length,
                 worker_id=worker_id,
                 weight_version=local_version,
@@ -299,7 +298,7 @@ def worker_process(
             )
 
             # Update state for next rollout
-            td = result.next_td
+            obs = result.next_obs
             ongoing_episode_return = result.current_episode_return
             ongoing_episode_length = result.current_episode_length
 
@@ -322,7 +321,7 @@ def worker_process(
 def collect_rollout(
     env,
     model: ActorCritic,
-    td: TensorDict,
+    obs: np.ndarray,
     rollout_length: int,
     worker_id: int,
     weight_version: int,
@@ -342,14 +341,14 @@ def collect_rollout(
 
     current_episode_return = ongoing_episode_return
     current_episode_length = ongoing_episode_length
+    next_done = False
 
     with torch.no_grad():
         for _ in range(rollout_length):
-            obs = td["observation"]
-            observations.append(obs.numpy())
+            observations.append(obs)
 
             # Get action from policy
-            obs_tensor = obs.unsqueeze(0) if obs.dim() == 1 else obs
+            obs_tensor = torch.from_numpy(obs).unsqueeze(0)
             action, log_prob, _, value = model.get_action_and_value(obs_tensor)
 
             action = action.squeeze(0)
@@ -360,16 +359,9 @@ def collect_rollout(
             log_probs.append(log_prob.item())
             values.append(value.item())
 
-            # Convert to one-hot for environment
-            action_onehot = torch.zeros(NUM_ACTIONS, dtype=torch.bool)
-            action_onehot[action.item()] = True
-            td["action"] = action_onehot
-
             # Step environment
-            td = env.step(td)
-
-            reward = td["next", "reward"].item()
-            done = td["next", "done"].item()
+            obs, reward, terminated, truncated, _ = env.step(action.item())
+            done = terminated or truncated
 
             rewards.append(reward)
             dones.append(done)
@@ -383,13 +375,13 @@ def collect_rollout(
                 episode_lengths.append(current_episode_length)
                 current_episode_return = 0.0
                 current_episode_length = 0
-                td = env.reset()
+                obs, _ = env.reset()
+                next_done = True
             else:
-                td = step_mdp(td)
+                next_done = False
 
     # Get final observation for bootstrapping
-    next_obs = td["observation"].numpy()
-    next_done = td.get("done", torch.tensor([False])).item() if "done" in td.keys() else False
+    next_obs = obs
 
     rollout = Rollout(
         observations=np.array(observations, dtype=np.float32),
@@ -408,7 +400,7 @@ def collect_rollout(
 
     return RolloutResult(
         rollout=rollout,
-        next_td=td,
+        next_obs=next_obs,
         current_episode_return=current_episode_return,
         current_episode_length=current_episode_length,
     )
@@ -489,18 +481,22 @@ def compute_vtrace(
 
 def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[str] = None):
     """Main training loop."""
+    # Multiprocessing start method, should be called before any shared primitives
+    mp.set_start_method("spawn")  # fork not working, workers stuck pulling SharedWeights, issues with WSL2 ?
 
     # Set seeds
     np.random.seed(seed)
     torch.manual_seed(seed)
-    # device = torch.device("cpu")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Use spawn for CUDA compatibility (though we're on CPU)
-    # mp.set_start_method("fork", force=True)
-
-    config = IMPALAConfig(total_frames=total_frames, num_workers=num_workers)
+    config = IMPALAConfig(
+        total_frames=total_frames,
+        num_workers=num_workers,
+        upgrade_levels = [1, 2],
+        game_steps_per_env = [2],
+    )
     print(f"Config: {config}")
 
     # Create model
@@ -784,34 +780,27 @@ def eval_model(num_games: int = 10, model_path: Optional[str] = None):
     wins = 0
     total_rewards = []
     total_lengths = []
-    env = SC2TRLEnv({"upgrade_level": [2], "game_steps_per_env": [2]}, device="cpu")
+    env = SC2GymEnv({"upgrade_level": [1], "game_steps_per_env": [2]})
 
     print(f"\nEvaluating for {num_games} games...")
 
     for game in range(num_games):
-        td = env.reset()
+        obs, _ = env.reset()
         done = False
         episode_reward = 0.0
         episode_length = 0
 
         while not done:
-            obs = td["observation"]
-
             with torch.no_grad():
-                obs_tensor = obs.unsqueeze(0) if obs.dim() == 1 else obs
+                obs_tensor = torch.from_numpy(obs).unsqueeze(0)
                 logits, _ = model.forward(obs_tensor)
-                action = logits.argmax(dim=-1).squeeze(0)  # Deterministic action
+                action = logits.argmax(dim=-1).squeeze(0).item()  # Deterministic action
 
-            # Convert to one-hot
-            action_onehot = torch.zeros(NUM_ACTIONS, dtype=torch.bool)
-            action_onehot[action.item()] = True
-            td["action"] = action_onehot
-            td = env.step(td)
+            obs, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
 
             episode_length += 1
-            episode_reward += td["next", "reward"].item()
-            if not (done := td["next", "done"].item()):
-                td = step_mdp(td)
+            episode_reward += reward
 
         wins += episode_reward > 0
         total_rewards.append(episode_reward)

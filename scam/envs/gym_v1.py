@@ -72,8 +72,8 @@ MOVE_STEP_SIZE = 2.0
 MAX_EPISODE_STEPS = 22.4 * 30  # 30 realtime seconds
 
 # Spawn configuration
-SPAWN_AREA_MIN = 0.0 + 14
-SPAWN_AREA_MAX = 32.0 - 14
+SPAWN_AREA_MIN = 0.0 + 15
+SPAWN_AREA_MAX = 32.0 - 15
 MIN_SPAWN_DISTANCE = 6.0
 MAX_SPAWN_DISTANCE = 9.0
 
@@ -82,9 +82,9 @@ NUM_ZERGLINGS = 2
 
 # Observation space size:
 # Marine: own_health (1), weapon_cooldown (1), upgrade level one-hot (3) = 5
-# Per zergling (x2): rel_x (1), rel_y (1), distance (1), health (1), angle (1), in_range (1) = 6
-# Total: 5 + 6*2 = 17
-OBS_SIZE = 17
+# Per zergling (x2): distance (1), health (1), angle (1), = 3
+# Total: 5 + 3*2 = 11
+OBS_SIZE = 11
 
 
 @dataclass
@@ -200,19 +200,15 @@ class SC2GymEnv(gym.Env):
         """Get observation features for a single zergling relative to marine."""
         if zergling is None:
             # Dead zergling - return zeros
-            return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            return [0.0, 0.0, 0.0]
 
         # Relative position (normalized by ~16 units for local awareness)
-        rel_x = (zergling.x - marine.x) / 16.0
-        rel_y = (zergling.y - marine.y) / 16.0
+        # rel_x = (zergling.x - marine.x) / 16.0
+        # rel_y = (zergling.y - marine.y) / 16.0
 
         # Clamp to [-1, 1]
-        rel_x = max(-1.0, min(1.0, rel_x))
-        rel_y = max(-1.0, min(1.0, rel_y))
-
-        # Distance (normalized, max meaningful distance ~20)
-        distance = marine.distance_to(zergling)
-        distance_norm = min(1.0, distance / 20.0)
+        # rel_x = max(-1.0, min(1.0, rel_x))
+        # rel_y = max(-1.0, min(1.0, rel_y))
 
         # Health (normalized)
         enemy_health = zergling.health / zergling.health_max
@@ -221,9 +217,14 @@ class SC2GymEnv(gym.Env):
         angle_norm = marine.angle_to(zergling) / math.pi
 
         # In attack range (binary)
-        in_range = 1.0 if distance <= MARINE_RANGE else 0.0
+        # in_range = 1.0 if distance <= MARINE_RANGE else 0.0
 
-        return [rel_x, rel_y, distance_norm, enemy_health, angle_norm, in_range]
+        # Distance (normalized, max meaningful distance ~20)
+        distance = marine.distance_to(zergling)
+        distance_norm = min(1.0, distance / 20.0)
+
+        # return [rel_x, rel_y, distance_norm, enemy_health, angle_norm, in_range]
+        return [enemy_health, angle_norm, distance_norm]
 
     def _compute_observation(self) -> np.ndarray:
         if not self.units[1]:
@@ -246,7 +247,9 @@ class SC2GymEnv(gym.Env):
 
         z1_obs = self._get_zergling_obs(marine, z1)
         z2_obs = self._get_zergling_obs(marine, z2)
-
+        logger.debug(f"Marine health: {own_health}, weapon cooldown: {weapon_cooldown_norm}, upgrade level: {self.upgrade_level}")
+        logger.debug(f"Zergling 1 obs: {z1_obs}")
+        logger.debug(f"Zergling 2 obs: {z2_obs}")
         obs = [own_health, weapon_cooldown_norm, *upgrade_one_hot, *z1_obs, *z2_obs]
 
         return np.array(obs, dtype=np.float32)
@@ -255,12 +258,14 @@ class SC2GymEnv(gym.Env):
         """Compute reward based on damage dealt/taken and terminal conditions"""
 
         if self.current_step >= MAX_EPISODE_STEPS:
-            return -2.0
+            return -100.0
 
         if not self.units[1] or not self.units[2]:
             ally_health = sum([u.health / u.health_max for u in self.units[1]], 0.0) / 1.0
             enemy_health = sum([u.health / u.health_max for u in self.units[2]], 0.0) / 2.0
-            return ally_health  - enemy_health
+            result = ally_health - enemy_health
+            result = result ** 2 if result >= 0 else result  # More rewards for each next hp point left
+            return result
 
         return 0.0
 
@@ -291,6 +296,7 @@ class SC2GymEnv(gym.Env):
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         self.current_step = 0
+        self.terminated = False
         self.clean_battlefield()
         self.prepare_battlefield()
         return self._compute_observation(), {}
