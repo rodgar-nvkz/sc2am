@@ -3,20 +3,19 @@ import dataclasses
 
 @dataclasses.dataclass
 class IMPALAConfig:
-    """IMPALA training configuration."""
+    """IMPALA training configuration - simplified for 1 game = 1 episode."""
 
-    # Rollout settings
-    rollout_length: int = 1024
+    # Batch settings
+    num_workers: int = 8
+    episodes_per_batch: int = 8  # Collect this many complete episodes before training
+    max_episode_steps: int = 1024  # Safety limit (game usually ends in ~200-600)
 
     # Training settings
-    num_workers: int = 8
-    total_frames: int = 1_000_000
-    mini_batch_size: int = 512
-    num_epochs: int = 2
+    total_episodes: int = 10_000  # Train for this many episodes
 
-    # V-trace parameters
+    # V-trace / GAE parameters
     gamma: float = 0.99
-    c_bar: float = 1.0    # Truncation for trace coefficients
+    c_bar: float = 1.0  # Truncation for trace coefficients
     rho_bar: float = 1.0  # Truncation for importance weights
 
     # PPO-style clipping
@@ -35,4 +34,3 @@ class IMPALAConfig:
 
     # Environment
     upgrade_levels: list = dataclasses.field(default_factory=list)
-    game_steps_per_env: list = dataclasses.field(default_factory=list)

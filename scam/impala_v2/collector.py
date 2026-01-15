@@ -1,5 +1,12 @@
+"""
+Simplified IMPALA collector: 1 game = 1 episode.
+
+Each worker collects complete episodes and sends them to the learner.
+No padding, no fixed rollout length, no mid-episode resets.
+"""
+
 import signal
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -13,120 +20,162 @@ from scam.impala_v2.model import ActorCritic
 
 
 @dataclass
-class Rollout:
-    """A single rollout from a worker with hybrid actions."""
+class Episode:
+    """A single complete episode from a worker."""
+
     worker_id: int
-    observations: np.ndarray           # (T, obs_size)
-    commands: np.ndarray               # (T,) discrete command indices
-    angles: np.ndarray                 # (T, 2) sin/cos angle encoding
-    rewards: np.ndarray                # (T,)
-    dones: np.ndarray                  # (T,) bool
-    behavior_cmd_log_probs: np.ndarray # (T,) log probs of commands
-    behavior_angle_log_probs: np.ndarray # (T,) log probs of angles
-    behavior_values: np.ndarray        # (T,) value estimates from behavior policy
-    action_masks: np.ndarray           # (T, num_commands) valid action masks
-    next_observation: np.ndarray       # (obs_size,) for bootstrapping
-    next_action_mask: np.ndarray       # (num_commands,) for bootstrapping
-    next_done: bool                    # Whether final state is terminal
-    weight_version: int                # Version of weights used for this rollout
-    episode_returns: list              # List of completed episode returns
-    episode_lengths: list              # List of completed episode lengths
+    observations: np.ndarray  # (T, obs_size)
+    commands: np.ndarray  # (T,)
+    angles: np.ndarray  # (T, 2)
+    rewards: np.ndarray  # (T,)
+    behavior_cmd_log_probs: np.ndarray  # (T,)
+    behavior_angle_log_probs: np.ndarray  # (T,)
+    behavior_values: np.ndarray  # (T,)
+    action_masks: np.ndarray  # (T, num_commands)
+    weight_version: int
+
+    @property
+    def length(self) -> int:
+        return len(self.rewards)
+
+    @property
+    def total_reward(self) -> float:
+        return float(self.rewards.sum())
 
 
 @dataclass
-class RolloutBatch:
-    """Pre-allocated batch of rollouts, ready to convert to tensors without stacking."""
-    observations: np.ndarray           # (B, T, obs_size)
-    commands: np.ndarray               # (B, T)
-    angles: np.ndarray                 # (B, T, 2)
-    rewards: np.ndarray                # (B, T)
-    dones: np.ndarray                  # (B, T)
-    behavior_cmd_log_probs: np.ndarray # (B, T)
-    behavior_angle_log_probs: np.ndarray # (B, T)
-    behavior_values: np.ndarray        # (B, T)
-    action_masks: np.ndarray           # (B, T, num_commands)
-    next_observations: np.ndarray      # (B, obs_size)
-    next_action_masks: np.ndarray      # (B, num_commands)
-    weight_versions: np.ndarray        # (B,) weight version used for each rollout
+class EpisodeBatch:
+    """Batch of complete episodes, concatenated for training."""
 
-    episode_returns: list = field(default_factory=list)
-    episode_lengths: list = field(default_factory=list)
+    observations: np.ndarray  # (N_total, obs_size)
+    commands: np.ndarray  # (N_total,)
+    angles: np.ndarray  # (N_total, 2)
+    rewards: np.ndarray  # (N_total,)
+    behavior_cmd_log_probs: np.ndarray  # (N_total,)
+    behavior_angle_log_probs: np.ndarray  # (N_total,)
+    behavior_values: np.ndarray  # (N_total,)
+    action_masks: np.ndarray  # (N_total, num_commands)
 
-    _count: int = 0
-    _capacity: int = 0
+    # Per-episode V-trace results (computed separately, then concatenated)
+    vtrace_targets: np.ndarray  # (N_total,)
+    advantages: np.ndarray  # (N_total,)
+
+    # Metadata
+    episode_lengths: list[int]
+    episode_returns: list[float]
+    weight_versions: list[int]
+    num_episodes: int
 
     @classmethod
-    def create(cls, batch_size: int, rollout_length: int, obs_size: int, num_commands: int = NUM_COMMANDS) -> "RolloutBatch":
-        """Pre-allocate arrays for the full batch."""
-        batch = cls(
-            observations=np.empty((batch_size, rollout_length, obs_size), dtype=np.float32),
-            commands=np.empty((batch_size, rollout_length), dtype=np.int64),
-            angles=np.empty((batch_size, rollout_length, 2), dtype=np.float32),
-            rewards=np.empty((batch_size, rollout_length), dtype=np.float32),
-            dones=np.empty((batch_size, rollout_length), dtype=bool),
-            behavior_cmd_log_probs=np.empty((batch_size, rollout_length), dtype=np.float32),
-            behavior_angle_log_probs=np.empty((batch_size, rollout_length), dtype=np.float32),
-            behavior_values=np.empty((batch_size, rollout_length), dtype=np.float32),
-            action_masks=np.empty((batch_size, rollout_length, num_commands), dtype=bool),
-            next_observations=np.empty((batch_size, obs_size), dtype=np.float32),
-            next_action_masks=np.empty((batch_size, num_commands), dtype=bool),
-            weight_versions=np.empty(batch_size, dtype=np.int64),
+    def from_episodes(cls, episodes: list[Episode], gamma: float = 0.99) -> "EpisodeBatch":
+        """Create batch from list of episodes, computing V-trace per episode."""
+
+        # Collect metadata
+        episode_lengths = [ep.length for ep in episodes]
+        episode_returns = [ep.total_reward for ep in episodes]
+        weight_versions = [ep.weight_version for ep in episodes]
+        total_steps = sum(episode_lengths)
+
+        # Pre-allocate concatenated arrays
+        observations = np.empty((total_steps, OBS_SIZE), dtype=np.float32)
+        commands = np.empty(total_steps, dtype=np.int64)
+        angles = np.empty((total_steps, 2), dtype=np.float32)
+        rewards = np.empty(total_steps, dtype=np.float32)
+        behavior_cmd_log_probs = np.empty(total_steps, dtype=np.float32)
+        behavior_angle_log_probs = np.empty(total_steps, dtype=np.float32)
+        behavior_values = np.empty(total_steps, dtype=np.float32)
+        action_masks = np.empty((total_steps, NUM_COMMANDS), dtype=bool)
+        vtrace_targets = np.empty(total_steps, dtype=np.float32)
+        advantages = np.empty(total_steps, dtype=np.float32)
+
+        # Fill arrays and compute V-trace per episode
+        offset = 0
+        for ep in episodes:
+            T = ep.length
+            end = offset + T
+
+            # Copy episode data
+            observations[offset:end] = ep.observations
+            commands[offset:end] = ep.commands
+            angles[offset:end] = ep.angles
+            rewards[offset:end] = ep.rewards
+            behavior_cmd_log_probs[offset:end] = ep.behavior_cmd_log_probs
+            behavior_angle_log_probs[offset:end] = ep.behavior_angle_log_probs
+            behavior_values[offset:end] = ep.behavior_values
+            action_masks[offset:end] = ep.action_masks
+
+            # Compute V-trace for this episode (terminal state, bootstrap = 0)
+            ep_vtrace, ep_adv = compute_vtrace_episode(rewards=ep.rewards, values=ep.behavior_values, gamma=gamma)
+            vtrace_targets[offset:end] = ep_vtrace
+            advantages[offset:end] = ep_adv
+
+            offset = end
+
+        return cls(
+            observations=observations,
+            commands=commands,
+            angles=angles,
+            rewards=rewards,
+            behavior_cmd_log_probs=behavior_cmd_log_probs,
+            behavior_angle_log_probs=behavior_angle_log_probs,
+            behavior_values=behavior_values,
+            action_masks=action_masks,
+            vtrace_targets=vtrace_targets,
+            advantages=advantages,
+            episode_lengths=episode_lengths,
+            episode_returns=episode_returns,
+            weight_versions=weight_versions,
+            num_episodes=len(episodes),
         )
-        batch._capacity = batch_size
-        return batch
-
-    def insert(self, rollout: Rollout):
-        """Insert a rollout at the next available slot."""
-        i = self._count
-        self.observations[i] = rollout.observations
-        self.commands[i] = rollout.commands
-        self.angles[i] = rollout.angles
-        self.rewards[i] = rollout.rewards
-        self.dones[i] = rollout.dones
-        self.behavior_cmd_log_probs[i] = rollout.behavior_cmd_log_probs
-        self.behavior_angle_log_probs[i] = rollout.behavior_angle_log_probs
-        self.behavior_values[i] = rollout.behavior_values
-        self.action_masks[i] = rollout.action_masks
-        self.next_observations[i] = rollout.next_observation
-        self.next_action_masks[i] = rollout.next_action_mask
-        self.weight_versions[i] = rollout.weight_version
-
-        self.episode_returns.extend(rollout.episode_returns)
-        self.episode_lengths.extend(rollout.episode_lengths)
-        self._count += 1
-
-    def is_full(self) -> bool:
-        return self._count >= self._capacity
 
     def to_tensors(self, device: torch.device) -> dict[str, torch.Tensor]:
-        """Convert to tensors - no stacking needed!"""
+        """Convert to tensors for training."""
         return {
             "observations": torch.from_numpy(self.observations).to(device),
             "commands": torch.from_numpy(self.commands).to(device),
             "angles": torch.from_numpy(self.angles).to(device),
             "rewards": torch.from_numpy(self.rewards).to(device),
-            "dones": torch.from_numpy(self.dones).to(device),
             "behavior_cmd_log_probs": torch.from_numpy(self.behavior_cmd_log_probs).to(device),
             "behavior_angle_log_probs": torch.from_numpy(self.behavior_angle_log_probs).to(device),
             "behavior_values": torch.from_numpy(self.behavior_values).to(device),
             "action_masks": torch.from_numpy(self.action_masks).to(device),
-            "next_observations": torch.from_numpy(self.next_observations).to(device),
-            "next_action_masks": torch.from_numpy(self.next_action_masks).to(device),
+            "vtrace_targets": torch.from_numpy(self.vtrace_targets).to(device),
+            "advantages": torch.from_numpy(self.advantages).to(device),
         }
 
 
-@dataclass
-class RolloutResult:
-    """Result of collect_rollout including continuation state."""
-    rollout: Rollout
-    next_obs: np.ndarray          # Observation to continue from
-    next_action_mask: np.ndarray  # Action mask to continue from
-    current_episode_return: float # Accumulated return in ongoing episode
-    current_episode_length: int   # Steps in ongoing episode
+def compute_vtrace_episode(rewards: np.ndarray, values: np.ndarray, gamma: float = 0.99) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute V-trace targets and advantages for a single complete episode.
+
+    Since episode is complete (terminal state), bootstrap value = 0.
+    Simplified version without importance sampling (on-policy assumption). Avg staleness < 3.
+    """
+    T = len(rewards)
+
+    # TD targets: standard TD(0) since episode is complete
+    # V_target[t] = r[t] + gamma * V_target[t+1], with V_target[T] = 0
+    vtrace_targets = np.zeros(T, dtype=np.float32)
+    advantages = np.zeros(T, dtype=np.float32)
+
+    # Backward pass
+    next_value = 0.0  # Terminal state
+    for t in reversed(range(T)):
+        vtrace_targets[t] = rewards[t] + gamma * next_value
+        advantages[t] = vtrace_targets[t] - values[t]
+        next_value = vtrace_targets[t]
+
+    return vtrace_targets, advantages
 
 
-def collector_worker(worker_id: int, rollout_queue: Any, shared_weights: SharedWeights, shutdown_event: Any, config: IMPALAConfig):
-    """Worker process that runs autonomous rollouts."""
+def collector_worker(
+    worker_id: int,
+    episode_queue: Any,
+    shared_weights: SharedWeights,
+    shutdown_event: Any,
+    config: IMPALAConfig,
+):
+    """Worker process that collects complete episodes."""
 
     # Ignore SIGINT in workers (let main handle it)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -136,43 +185,29 @@ def collector_worker(worker_id: int, rollout_queue: Any, shared_weights: SharedW
         model = ActorCritic(OBS_SIZE, NUM_COMMANDS)
         model.eval()
 
-        obs, info = env.reset()
-        action_mask = info["action_mask"]
         local_version = shared_weights.pull(model)
-        ongoing_episode_length = 0
-        ongoing_episode_return = 0.0
 
         while not shutdown_event.is_set():
-            # Check for weight updates (async, between rollouts)
+            # Check for weight updates before each episode
             current_version = shared_weights.get_version()
             if current_version > local_version:
                 local_version = shared_weights.pull(model)
                 logger.debug(f"Worker {worker_id} updated to weight version {local_version}")
 
-            # Collect rollout
-            result = collect_rollout(
+            # Collect one complete episode
+            episode = collect_episode(
                 env=env,
                 model=model,
-                obs=obs,
-                action_mask=action_mask,
-                rollout_length=config.rollout_length,
                 worker_id=worker_id,
                 weight_version=local_version,
-                ongoing_episode_return=ongoing_episode_return,
-                ongoing_episode_length=ongoing_episode_length,
+                max_steps=config.max_episode_steps,
             )
 
-            # Update state for next rollout
-            obs = result.next_obs
-            action_mask = result.next_action_mask
-            ongoing_episode_return = result.current_episode_return
-            ongoing_episode_length = result.current_episode_length
-
-            # Send rollout to main (non-blocking put with timeout)
+            # Send episode to main
             try:
-                rollout_queue.put(result.rollout, timeout=1.0)
+                episode_queue.put(episode, timeout=1.0)
             except Exception as e:
-                logger.warning(f"Worker {worker_id} failed to send rollout: {e}")
+                logger.warning(f"Worker {worker_id} failed to send episode: {e}")
                 continue
 
         logger.info(f"Worker {worker_id} shutting down...")
@@ -181,122 +216,65 @@ def collector_worker(worker_id: int, rollout_queue: Any, shared_weights: SharedW
     except Exception as e:
         logger.error(f"Worker {worker_id} crashed: {e}")
         import traceback
+
         traceback.print_exc()
 
 
-def collect_rollout(
-    env,
-    model: ActorCritic,
-    obs: np.ndarray,
-    action_mask: np.ndarray,
-    rollout_length: int,
-    worker_id: int,
-    weight_version: int,
-    ongoing_episode_return: float = 0.0,
-    ongoing_episode_length: int = 0,
-) -> RolloutResult:
-    """Collect a single rollout of fixed length with hybrid actions."""
+def collect_episode(env, model: ActorCritic, worker_id: int, weight_version: int, max_steps: int = 1024) -> Episode:
+    """Collect a single complete episode."""
 
-    obs_size = obs.shape[0]
-    num_commands = action_mask.shape[0]
+    # Use lists for variable-length episode
+    observations = []
+    commands = []
+    angles = []
+    rewards = []
+    cmd_log_probs = []
+    angle_log_probs = []
+    values = []
+    action_masks = []
 
-    # Pre-allocate arrays (more efficient than list append -> convert)
-    observations = np.empty((rollout_length, obs_size), dtype=np.float32)
-    commands = np.empty(rollout_length, dtype=np.int64)
-    angles = np.empty((rollout_length, 2), dtype=np.float32)
-    rewards = np.empty(rollout_length, dtype=np.float32)
-    dones = np.empty(rollout_length, dtype=bool)
-    cmd_log_probs = np.empty(rollout_length, dtype=np.float32)
-    angle_log_probs = np.empty(rollout_length, dtype=np.float32)
-    values = np.empty(rollout_length, dtype=np.float32)
-    action_masks = np.empty((rollout_length, num_commands), dtype=bool)
-
-    episode_returns = []
-    episode_lengths = []
-
-    current_episode_return = ongoing_episode_return
-    current_episode_length = ongoing_episode_length
-    next_done = False
+    obs, info = env.reset()
+    action_mask = info["action_mask"]
+    done = False
+    steps = 0
 
     with torch.no_grad():
-        for t in range(rollout_length):
-            observations[t] = obs
-            action_masks[t] = action_mask
+        while not done and steps < max_steps:
+            observations.append(obs)
+            action_masks.append(action_mask)
 
-            # Get action from policy (autoregressive sampling) with action mask
+            # Get action from policy
             obs_tensor = torch.from_numpy(obs).unsqueeze(0)
             mask_tensor = torch.from_numpy(action_mask).unsqueeze(0)
             command, angle, cmd_log_prob, angle_log_prob, _, value = model.get_action_and_value(
                 obs_tensor, action_mask=mask_tensor
             )
 
-            command = command.squeeze(0)
-            angle = angle.squeeze(0)
-            cmd_log_prob = cmd_log_prob.squeeze(0)
-            angle_log_prob = angle_log_prob.squeeze(0)
-            value = value.squeeze(0) if value.dim() > 0 else value
-
-            commands[t] = command.item()
-            angles[t] = angle.numpy()
-            cmd_log_probs[t] = cmd_log_prob.item()
-            angle_log_probs[t] = angle_log_prob.item()
-            values[t] = value.item()
-
-            # Create hybrid action dict for environment
-            action = {'command': command.item(), 'angle': angle.numpy()}
+            commands.append(command.item())
+            angles.append(angle.squeeze(0).numpy())
+            cmd_log_probs.append(cmd_log_prob.item())
+            angle_log_probs.append(angle_log_prob.item())
+            values.append(value.item())
 
             # Step environment
+            action = {"command": command.item(), "angle": angle.squeeze(0).numpy()}
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
-            rewards[t] = reward
-            dones[t] = done
-
-            current_episode_return += reward
-            current_episode_length += 1
-
-            # Update action mask from info
+            rewards.append(reward)
             action_mask = info["action_mask"]
+            steps += 1
 
-            # Handle episode end
-            if done:
-                episode_returns.append(current_episode_return)
-                episode_lengths.append(current_episode_length)
-                current_episode_return = 0.0
-                current_episode_length = 0
-                obs, info = env.reset()
-                action_mask = info["action_mask"]
-                next_done = True
-            else:
-                next_done = False
-
-    # Get final observation and action mask for bootstrapping
-    next_obs = obs
-    next_action_mask = action_mask
-
-    rollout = Rollout(
-        observations=observations,
-        commands=commands,
-        angles=angles,
-        rewards=rewards,
-        dones=dones,
-        behavior_cmd_log_probs=cmd_log_probs,
-        behavior_angle_log_probs=angle_log_probs,
-        behavior_values=values,
-        action_masks=action_masks,
-        next_observation=next_obs.astype(np.float32),
-        next_action_mask=next_action_mask,
-        next_done=next_done,
+    # Convert lists to arrays
+    return Episode(
         worker_id=worker_id,
+        observations=np.array(observations, dtype=np.float32),
+        commands=np.array(commands, dtype=np.int64),
+        angles=np.array(angles, dtype=np.float32),
+        rewards=np.array(rewards, dtype=np.float32),
+        behavior_cmd_log_probs=np.array(cmd_log_probs, dtype=np.float32),
+        behavior_angle_log_probs=np.array(angle_log_probs, dtype=np.float32),
+        behavior_values=np.array(values, dtype=np.float32),
+        action_masks=np.array(action_masks, dtype=bool),
         weight_version=weight_version,
-        episode_returns=episode_returns,
-        episode_lengths=episode_lengths,
-    )
-
-    return RolloutResult(
-        rollout=rollout,
-        next_obs=next_obs,
-        next_action_mask=next_action_mask,
-        current_episode_return=current_episode_return,
-        current_episode_length=current_episode_length,
     )
