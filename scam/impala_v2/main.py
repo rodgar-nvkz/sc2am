@@ -114,54 +114,65 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
             advantages = tensors["advantages"]
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-            # === Single forward pass on ALL steps ===
+            # === Training loop: multiple epochs over the batch ===
             model.train()
-            _, _, new_cmd_log_probs, new_angle_log_probs, entropy, new_values = model.get_action_and_value(
-                tensors["observations"],
-                tensors["commands"],
-                tensors["angles"],
-                tensors["action_masks"],
-            )
+            total_loss = 0.0
+            total_entropy = 0.0
 
-            # === Command Policy Loss (PPO-style clipping) ===
-            old_cmd_log_probs = tensors["behavior_cmd_log_probs"]
-            cmd_ratio = torch.exp(new_cmd_log_probs - old_cmd_log_probs)
-            cmd_surr1 = cmd_ratio * advantages
-            cmd_surr2 = torch.clamp(cmd_ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon) * advantages
-            cmd_policy_loss = -torch.min(cmd_surr1, cmd_surr2).mean()
+            for _ in range(config.num_epochs):
+                _, _, new_cmd_log_probs, new_angle_log_probs, entropy, new_values = model.get_action_and_value(
+                    tensors["observations"],
+                    tensors["commands"],
+                    tensors["angles"],
+                    tensors["action_masks"],
+                )
 
-            # === Angle Policy Loss (masked by MOVE commands) ===
-            old_angle_log_probs = tensors["behavior_angle_log_probs"]
-            move_mask = (tensors["commands"] == ACTION_MOVE).float()
-            angle_ratio = torch.exp(new_angle_log_probs - old_angle_log_probs)
-            angle_surr1 = angle_ratio * advantages * move_mask
-            angle_surr2 = (
-                torch.clamp(angle_ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon)
-                * advantages
-                * move_mask
-            )
-            num_moves = move_mask.sum().clamp(min=1.0)
-            angle_policy_loss = -torch.min(angle_surr1, angle_surr2).sum() / num_moves
+                # === Command Policy Loss (PPO-style clipping) ===
+                old_cmd_log_probs = tensors["behavior_cmd_log_probs"]
+                cmd_ratio = torch.exp(new_cmd_log_probs - old_cmd_log_probs)
+                cmd_surr1 = cmd_ratio * advantages
+                cmd_surr2 = torch.clamp(cmd_ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon) * advantages
+                cmd_policy_loss = -torch.min(cmd_surr1, cmd_surr2).mean()
 
-            # === Value Loss ===
-            value_loss = F.smooth_l1_loss(new_values, tensors["vtrace_targets"])
+                # === Angle Policy Loss (masked by MOVE commands) ===
+                old_angle_log_probs = tensors["behavior_angle_log_probs"]
+                move_mask = (tensors["commands"] == ACTION_MOVE).float()
+                angle_ratio = torch.exp(new_angle_log_probs - old_angle_log_probs)
+                angle_surr1 = angle_ratio * advantages * move_mask
+                angle_surr2 = (
+                    torch.clamp(angle_ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon)
+                    * advantages
+                    * move_mask
+                )
+                num_moves = move_mask.sum().clamp(min=1.0)
+                angle_policy_loss = -torch.min(angle_surr1, angle_surr2).sum() / num_moves
 
-            # === Entropy Loss ===
-            entropy_loss = -entropy.mean()
+                # === Value Loss ===
+                value_loss = F.smooth_l1_loss(new_values, tensors["vtrace_targets"])
 
-            # === Total Loss ===
-            policy_loss = cmd_policy_loss + angle_policy_loss
-            loss = policy_loss + config.value_coef * value_loss + config.entropy_coef * entropy_loss
+                # === Entropy Loss ===
+                entropy_loss = -entropy.mean()
 
-            # === Single backward pass ===
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
-            optimizer.step()
+                # === Total Loss ===
+                policy_loss = cmd_policy_loss + angle_policy_loss
+                loss = policy_loss + config.value_coef * value_loss + config.entropy_coef * entropy_loss
+
+                # === Backward pass ===
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+                optimizer.step()
+
+                total_loss += loss.item()
+                total_entropy += entropy.mean().item()
 
             update_count += 1
             lr_scheduler.step()
             shared_weights.push(model)
+
+            # Average over epochs for logging
+            avg_loss = total_loss / config.num_epochs
+            avg_entropy = total_entropy / config.num_epochs
 
             # Logging
             elapsed = time.time() - start_time
@@ -180,8 +191,8 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
                 f"Rew: {avg_return:>5.2f} | "
                 f"Len: {avg_length:>5.0f} | "
                 f"Win: {win_rate:>5.1f}% | "
-                f"Loss: {loss.item():>6.3f} | "
-                f"Ent: {entropy.mean().item():>5.2f} | "
+                f"Loss: {avg_loss:>6.3f} | "
+                f"Ent: {avg_entropy:>5.2f} | "
                 f"Stale: {avg_staleness:>4.1f} | "
                 f"LR: {optimizer.param_groups[0]['lr']:.2e}"
             )
@@ -236,20 +247,20 @@ def main():
 
     # Train command
     train_parser = subparsers.add_parser("train", help="Train a new agent")
-    train_parser.add_argument("--episodes", type=int, default=10_000, help="Total training episodes")
-    train_parser.add_argument("--num-workers", type=int, default=8, help="Number of worker processes")
-    train_parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    train_parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
+    train_parser.add_argument("-e", "--episodes", type=int, default=10_000, help="Total training episodes")
+    train_parser.add_argument("-w", "--workers", type=int, default=8, help="Number of worker processes")
+    train_parser.add_argument("-s", "--seed", type=int, default=42, help="Random seed")
+    train_parser.add_argument("-r", "--resume", type=str, default=None, help="Path to checkpoint to resume from")
 
     # Eval command
     eval_parser = subparsers.add_parser("eval", help="Evaluate a trained agent")
-    eval_parser.add_argument("--games", type=int, default=10, help="Number of games to play")
-    eval_parser.add_argument("--model", type=str, default=None, help="Path to model checkpoint")
+    eval_parser.add_argument("-g", "--games", type=int, default=10, help="Number of games to play")
+    eval_parser.add_argument("-m", "--model", type=str, default=None, help="Path to model checkpoint")
 
     args = parser.parse_args()
 
     if args.command == "train":
-        train(total_episodes=args.episodes, num_workers=args.num_workers, seed=args.seed, resume=args.resume)
+        train(total_episodes=args.episodes, num_workers=args.workers, seed=args.seed, resume=args.resume)
     elif args.command == "eval":
         eval_model(num_games=args.games, model_path=args.model)
     else:

@@ -9,7 +9,6 @@ SC2AM (StarCraft II Autonomous Model) is a high-throughput RL training framework
 - Python 3.14+
 - `s2clientprotocol` - Direct SC2 API communication
 - `pettingzoo` - Multi-agent RL environment interface
-- `burnysc2` - Used in research scripts only
 - `uv` - Package manager
 
 ## Structure
@@ -25,13 +24,16 @@ scam/
 ```
 
 ## Key Classes
-
 - `SC2BackgroundServer`: Spawns SC2 process, manages websocket, sends protobuf requests
 - `SC2Game`: Extends server with observation helpers (grids, unit positions)
-- `MinigameEnvironment`: PettingZoo `ParallelEnv` wrapping SC2Game
 
 ## Notes
-
 - SC2 must be installed at `~/StarCraftII/`
 - Maps stored in `maps/` folder (MPQ format)
 - Research folder contains reference implementations, not core functionality
+
+## IMPALA Training (`scam/impala_*/`)
+Marine vs Zerglings trainer with hybrid actions (discrete command + continuous angle).
+Async distributed workers collects complete episodes, learner batches them and trains. No fixed rollouts, no padding, no mini-batches.
+Key insight: for sparse terminal rewards, match your abstractions to the problem - think in episodes, not steps.
+Bigger batches with more epochs extract more signal. Watch staleness to know when you've pushed too far.

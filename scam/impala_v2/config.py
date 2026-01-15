@@ -7,11 +7,12 @@ class IMPALAConfig:
 
     # Batch settings
     num_workers: int = 8
-    episodes_per_batch: int = 8  # Collect this many complete episodes before training
+    episodes_per_batch: int = 128  # Collect this many complete episodes before training
     max_episode_steps: int = 1024  # Safety limit (game usually ends in ~200-600)
 
     # Training settings
     total_episodes: int = 10_000  # Train for this many episodes
+    num_epochs: int = 8  # Training passes per batch
 
     # V-trace / GAE parameters
     gamma: float = 0.99
