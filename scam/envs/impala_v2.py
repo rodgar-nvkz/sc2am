@@ -4,7 +4,7 @@ Marine vs 2 Zerglings RL Environment
 A Gymnasium environment for training a Marine agent against 2 scripted Zerglings.
 Uses vector observations and hybrid action space:
 - Discrete commands: STAY, MOVE, ATTACK_Z1, ATTACK_Z2
-- Continuous angle (sin, cos) for MOVE command - relative to reference direction
+- Continuous angle (sin, cos) for MOVE command in world-space polar coords
 
 The observation and action spaces use a relative reference frame based on the
 direction to the closest enemy, enabling rotation-invariant learning.
@@ -41,13 +41,10 @@ ZERGLING_MAX_HP = 35.0
 ZERGLING_RANGE = 0.1  # Melee
 ZERGLING_SPEED = 4.13
 
-# Hybrid action space constants
 # Discrete commands
-# ACTION_STAY = 0
 ACTION_MOVE = 0
 ACTION_ATTACK_Z1 = 1
 ACTION_ATTACK_Z2 = 2
-
 NUM_COMMANDS = 3
 
 # Movement step size (how far to move per action)
@@ -295,12 +292,19 @@ class SC2GymEnv(gym.Env):
         else:
             raise ValueError(f"Invalid command: {command}")
 
+    def get_action_mask(self) -> np.ndarray:
+        """ACTIONS=[MOVE, ATTACK_Z1, ATTACK_Z2]"""
+        mask = np.ones(NUM_COMMANDS, dtype=bool)
+        mask[ACTION_ATTACK_Z1] = len(self.units[2]) > 0
+        mask[ACTION_ATTACK_Z2] = len(self.units[2]) > 1
+        return mask
+
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         self.current_step = 0
         self.terminated = False
         self.clean_battlefield()
         self.prepare_battlefield()
-        return self._compute_observation(), {}
+        return self._compute_observation(), {"action_mask": self.get_action_mask()}
 
     def step(self, action: dict) -> tuple:
         logger.debug(f"Environment step {self.current_step} with action {action}")
@@ -314,7 +318,7 @@ class SC2GymEnv(gym.Env):
         obs = self._compute_observation()
         reward = self._compute_reward()
         truncated = self.current_step >= MAX_EPISODE_STEPS
-        return obs, reward, self.terminated, truncated, {"won": reward > 0}
+        return obs, reward, self.terminated, truncated, {"won": reward > 0, "action_mask": self.get_action_mask()}
 
     def close(self) -> None:
         self.game.close()

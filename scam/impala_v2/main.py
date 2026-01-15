@@ -26,7 +26,6 @@ import time
 from collections import deque
 from multiprocessing import Event, Process, Queue
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
@@ -42,7 +41,7 @@ from scam.impala_v2.model import ActorCritic
 from scam.train.impala import compute_vtrace
 
 
-def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[str] = None):
+def train(total_frames: int, num_workers: int, seed: int = 42, resume: str | None = None):
     """Main training loop."""
     mp.set_start_method("spawn")
     np.random.seed(seed)
@@ -89,7 +88,7 @@ def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[
 
     try:
         while collected_frames < total_frames:
-            rollout_batch = RolloutBatch.create(num_workers, config.rollout_length, OBS_SIZE)
+            rollout_batch = RolloutBatch.create(num_workers, config.rollout_length, OBS_SIZE, NUM_COMMANDS)
 
             while not rollout_batch.is_full():
                 try:
@@ -100,7 +99,7 @@ def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[
                     logger.warning(f"Timeout waiting for rollouts: {e}")
                     alive_workers = sum(1 for w in workers if w.is_alive())
                     if alive_workers == 0:
-                        raise RuntimeError("All workers have died!")
+                        raise RuntimeError("All workers have died!") from e
                     continue
 
             # Track episode statistics
@@ -112,11 +111,12 @@ def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[
             # Compute V-trace targets with current policy
             model.eval()
             with torch.no_grad():
-                # Get current policy log probs and values
+                # Get current policy log probs and values with action masking
                 _, _, target_cmd_log_probs, target_angle_log_probs, _, current_values = model.get_action_and_value(
                     batch["observations"],
                     batch["commands"],
                     batch["angles"],
+                    batch["action_masks"],
                 )
                 bootstrap_values = model.get_value(batch["next_observations"])
 
@@ -149,6 +149,7 @@ def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[
             flat_vtrace_targets = vtrace_targets.reshape(B * T)
             flat_old_cmd_log_probs = batch["behavior_cmd_log_probs"].reshape(B * T)
             flat_old_angle_log_probs = batch["behavior_angle_log_probs"].reshape(B * T)
+            flat_action_masks = batch["action_masks"].reshape(B * T, -1)
 
             # PPO-style mini-batch updates
             model.train()
@@ -160,7 +161,7 @@ def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[
             total_entropy = 0.0
             num_batches = 0
 
-            for epoch in range(config.num_epochs):
+            for _ in range(config.num_epochs):
                 np.random.shuffle(indices)
 
                 for start in range(0, B * T, config.mini_batch_size):
@@ -174,10 +175,11 @@ def train(total_frames: int, num_workers: int, seed: int = 42, resume: Optional[
                     mb_vtrace_targets = flat_vtrace_targets[mb_indices]
                     mb_old_cmd_log_probs = flat_old_cmd_log_probs[mb_indices]
                     mb_old_angle_log_probs = flat_old_angle_log_probs[mb_indices]
+                    mb_action_masks = flat_action_masks[mb_indices]
 
-                    # Forward pass
+                    # Forward pass (with action masking)
                     _, _, new_cmd_log_probs, new_angle_log_probs, entropy, new_values = model.get_action_and_value(
-                        mb_obs, mb_commands, mb_angles
+                        mb_obs, mb_commands, mb_angles, mb_action_masks
                     )
 
                     # === Command Policy Loss (standard PPO) ===

@@ -2,7 +2,6 @@ import glob
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
@@ -13,7 +12,7 @@ from scam.impala_v2.model import ActorCritic
 from scam.settings import PROJECT_ROOT
 
 
-def eval_model(num_games: int = 10, model_path: Optional[str] = None, upgrade_level: int = 0):
+def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level: int = 0):
     """Evaluate a trained model with hybrid action space."""
     device = torch.device("cpu")
 
@@ -37,16 +36,19 @@ def eval_model(num_games: int = 10, model_path: Optional[str] = None, upgrade_le
         done = False
         episode_length = 0
         episode_reward = 0.0
-        obs, _ = env.reset()
+        obs, info = env.reset()
+        action_mask = info["action_mask"]
 
         while not done:
             with torch.no_grad():
                 obs_tensor = torch.from_numpy(obs).unsqueeze(0)
-                # Use deterministic action for evaluation
-                command, angle = model.get_deterministic_action(obs_tensor)
+                mask_tensor = torch.from_numpy(action_mask).unsqueeze(0)
+                # Use deterministic action for evaluation (with action masking)
+                command, angle = model.get_deterministic_action(obs_tensor, mask_tensor)
 
             action = {'command': command.squeeze(0).item(), 'angle': angle.squeeze(0).numpy()}
-            obs, reward, terminated, truncated, _ = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action)
+            action_mask = info["action_mask"]
             done = terminated or truncated
             episode_length += 1
             episode_reward += reward

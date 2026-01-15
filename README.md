@@ -14,6 +14,14 @@ Existing bot frameworks are built for a different purpose. They prioritize devel
 SC2AM prioritizes RL needs providing Gymnasium-native interface, lean state extraction and parallel execution to achieve as high as possible throughput utilising modern hardware.
 
 
+## Progress
+
+| Date | Description | Environment | Code |
+|------|-------------|-------------|------|
+| 20250111 | Egocentric WASD kiting | 1v1 flat env | `train/ppo_v0.py` |
+| 20250114 | World-space polar coords | 1v2 flat env | `impala_v2/main.py` |
+
+
 ## RL References
 - [RLlib](https://docs.ray.io/en/latest/rllib/)
 - [PettingZoo](https://pettingzoo.farama.org/)
@@ -32,7 +40,3 @@ SC2AM prioritizes RL needs providing Gymnasium-native interface, lean state extr
 - Go-Explore (Uber AI, Montezuma’s Revenge)
 - Curriculum Learning
 - Quality Diversity (MAP-Elites)
-
-
-## Progress
-* 20260111: gym_v0 / ppo_v0 Win rate: 20/20 (100.0%) Average reward: 1.75

@@ -90,12 +90,24 @@ class ActorCritic(nn.Module):
         angle_std = self.angle_logstd.exp()
         return distributions.Normal(angle_mean, angle_std)
 
-    def get_action_and_value(self, obs: Tensor, command: Tensor | None = None, angle: Tensor | None = None):
+    def get_action_and_value(
+        self,
+        obs: Tensor,
+        command: Tensor | None = None,
+        angle: Tensor | None = None,
+        action_mask: Tensor | None = None,
+    ):
         """
         Get action, log_prob, entropy, and value for given observation.
 
         If command/angle are provided, computes log_prob for those actions.
         Otherwise, samples new actions.
+
+        Args:
+            obs: (B, obs_size) observations
+            command: (B,) discrete command indices (optional, samples if None)
+            angle: (B, 2) sin/cos angle encoding (optional, samples if None)
+            action_mask: (B, num_commands) boolean mask where True = valid action
 
         Returns:
             command: (B,) discrete command indices
@@ -106,6 +118,10 @@ class ActorCritic(nn.Module):
             value: (B,) value estimates
         """
         features, cmd_logits, value = self.forward(obs)
+
+        # Apply action mask if provided, set invalid action logits to -inf
+        if action_mask is not None:
+            cmd_logits = cmd_logits.masked_fill(~action_mask, float('-inf'))
 
         # Command distribution
         cmd_dist = distributions.Categorical(logits=cmd_logits)
@@ -132,9 +148,18 @@ class ActorCritic(nn.Module):
 
         return command, angle, cmd_log_prob, angle_log_prob, entropy, value.squeeze(-1)
 
-    def get_deterministic_action(self, obs: Tensor):
-        """Get deterministic action for evaluation (argmax command, mean angle)."""
+    def get_deterministic_action(self, obs: Tensor, action_mask: Tensor | None = None):
+        """Get deterministic action for evaluation (argmax command, mean angle).
+
+        Args:
+            obs: (B, obs_size) observations
+            action_mask: (B, num_commands) boolean mask where True = valid action
+        """
         features, cmd_logits, _ = self.forward(obs)
+
+        # Apply action mask if provided
+        if action_mask is not None:
+            cmd_logits = cmd_logits.masked_fill(~action_mask, float('-inf'))
 
         # Deterministic command (argmax)
         command = cmd_logits.argmax(dim=-1)

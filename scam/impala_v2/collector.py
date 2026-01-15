@@ -24,7 +24,9 @@ class Rollout:
     behavior_cmd_log_probs: np.ndarray # (T,) log probs of commands
     behavior_angle_log_probs: np.ndarray # (T,) log probs of angles
     behavior_values: np.ndarray        # (T,) value estimates from behavior policy
+    action_masks: np.ndarray           # (T, num_commands) valid action masks
     next_observation: np.ndarray       # (obs_size,) for bootstrapping
+    next_action_mask: np.ndarray       # (num_commands,) for bootstrapping
     next_done: bool                    # Whether final state is terminal
     weight_version: int                # Version of weights used for this rollout
     episode_returns: list              # List of completed episode returns
@@ -42,7 +44,9 @@ class RolloutBatch:
     behavior_cmd_log_probs: np.ndarray # (B, T)
     behavior_angle_log_probs: np.ndarray # (B, T)
     behavior_values: np.ndarray        # (B, T)
+    action_masks: np.ndarray           # (B, T, num_commands)
     next_observations: np.ndarray      # (B, obs_size)
+    next_action_masks: np.ndarray      # (B, num_commands)
     weight_versions: np.ndarray        # (B,) weight version used for each rollout
 
     episode_returns: list = field(default_factory=list)
@@ -52,7 +56,7 @@ class RolloutBatch:
     _capacity: int = 0
 
     @classmethod
-    def create(cls, batch_size: int, rollout_length: int, obs_size: int) -> "RolloutBatch":
+    def create(cls, batch_size: int, rollout_length: int, obs_size: int, num_commands: int = NUM_COMMANDS) -> "RolloutBatch":
         """Pre-allocate arrays for the full batch."""
         batch = cls(
             observations=np.empty((batch_size, rollout_length, obs_size), dtype=np.float32),
@@ -63,7 +67,9 @@ class RolloutBatch:
             behavior_cmd_log_probs=np.empty((batch_size, rollout_length), dtype=np.float32),
             behavior_angle_log_probs=np.empty((batch_size, rollout_length), dtype=np.float32),
             behavior_values=np.empty((batch_size, rollout_length), dtype=np.float32),
+            action_masks=np.empty((batch_size, rollout_length, num_commands), dtype=bool),
             next_observations=np.empty((batch_size, obs_size), dtype=np.float32),
+            next_action_masks=np.empty((batch_size, num_commands), dtype=bool),
             weight_versions=np.empty(batch_size, dtype=np.int64),
         )
         batch._capacity = batch_size
@@ -80,7 +86,9 @@ class RolloutBatch:
         self.behavior_cmd_log_probs[i] = rollout.behavior_cmd_log_probs
         self.behavior_angle_log_probs[i] = rollout.behavior_angle_log_probs
         self.behavior_values[i] = rollout.behavior_values
+        self.action_masks[i] = rollout.action_masks
         self.next_observations[i] = rollout.next_observation
+        self.next_action_masks[i] = rollout.next_action_mask
         self.weight_versions[i] = rollout.weight_version
 
         self.episode_returns.extend(rollout.episode_returns)
@@ -101,7 +109,9 @@ class RolloutBatch:
             "behavior_cmd_log_probs": torch.from_numpy(self.behavior_cmd_log_probs).to(device),
             "behavior_angle_log_probs": torch.from_numpy(self.behavior_angle_log_probs).to(device),
             "behavior_values": torch.from_numpy(self.behavior_values).to(device),
+            "action_masks": torch.from_numpy(self.action_masks).to(device),
             "next_observations": torch.from_numpy(self.next_observations).to(device),
+            "next_action_masks": torch.from_numpy(self.next_action_masks).to(device),
         }
 
 
@@ -110,6 +120,7 @@ class RolloutResult:
     """Result of collect_rollout including continuation state."""
     rollout: Rollout
     next_obs: np.ndarray          # Observation to continue from
+    next_action_mask: np.ndarray  # Action mask to continue from
     current_episode_return: float # Accumulated return in ongoing episode
     current_episode_length: int   # Steps in ongoing episode
 
@@ -125,7 +136,8 @@ def collector_worker(worker_id: int, rollout_queue: Any, shared_weights: SharedW
         model = ActorCritic(OBS_SIZE, NUM_COMMANDS)
         model.eval()
 
-        obs, _ = env.reset()
+        obs, info = env.reset()
+        action_mask = info["action_mask"]
         local_version = shared_weights.pull(model)
         ongoing_episode_length = 0
         ongoing_episode_return = 0.0
@@ -142,6 +154,7 @@ def collector_worker(worker_id: int, rollout_queue: Any, shared_weights: SharedW
                 env=env,
                 model=model,
                 obs=obs,
+                action_mask=action_mask,
                 rollout_length=config.rollout_length,
                 worker_id=worker_id,
                 weight_version=local_version,
@@ -151,6 +164,7 @@ def collector_worker(worker_id: int, rollout_queue: Any, shared_weights: SharedW
 
             # Update state for next rollout
             obs = result.next_obs
+            action_mask = result.next_action_mask
             ongoing_episode_return = result.current_episode_return
             ongoing_episode_length = result.current_episode_length
 
@@ -174,6 +188,7 @@ def collect_rollout(
     env,
     model: ActorCritic,
     obs: np.ndarray,
+    action_mask: np.ndarray,
     rollout_length: int,
     worker_id: int,
     weight_version: int,
@@ -183,6 +198,7 @@ def collect_rollout(
     """Collect a single rollout of fixed length with hybrid actions."""
 
     obs_size = obs.shape[0]
+    num_commands = action_mask.shape[0]
 
     # Pre-allocate arrays (more efficient than list append -> convert)
     observations = np.empty((rollout_length, obs_size), dtype=np.float32)
@@ -193,6 +209,7 @@ def collect_rollout(
     cmd_log_probs = np.empty(rollout_length, dtype=np.float32)
     angle_log_probs = np.empty(rollout_length, dtype=np.float32)
     values = np.empty(rollout_length, dtype=np.float32)
+    action_masks = np.empty((rollout_length, num_commands), dtype=bool)
 
     episode_returns = []
     episode_lengths = []
@@ -204,10 +221,14 @@ def collect_rollout(
     with torch.no_grad():
         for t in range(rollout_length):
             observations[t] = obs
+            action_masks[t] = action_mask
 
-            # Get action from policy (autoregressive sampling)
+            # Get action from policy (autoregressive sampling) with action mask
             obs_tensor = torch.from_numpy(obs).unsqueeze(0)
-            command, angle, cmd_log_prob, angle_log_prob, _, value = model.get_action_and_value(obs_tensor)
+            mask_tensor = torch.from_numpy(action_mask).unsqueeze(0)
+            command, angle, cmd_log_prob, angle_log_prob, _, value = model.get_action_and_value(
+                obs_tensor, action_mask=mask_tensor
+            )
 
             command = command.squeeze(0)
             angle = angle.squeeze(0)
@@ -225,7 +246,7 @@ def collect_rollout(
             action = {'command': command.item(), 'angle': angle.numpy()}
 
             # Step environment
-            obs, reward, terminated, truncated, _ = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
             rewards[t] = reward
@@ -234,19 +255,24 @@ def collect_rollout(
             current_episode_return += reward
             current_episode_length += 1
 
+            # Update action mask from info
+            action_mask = info["action_mask"]
+
             # Handle episode end
             if done:
                 episode_returns.append(current_episode_return)
                 episode_lengths.append(current_episode_length)
                 current_episode_return = 0.0
                 current_episode_length = 0
-                obs, _ = env.reset()
+                obs, info = env.reset()
+                action_mask = info["action_mask"]
                 next_done = True
             else:
                 next_done = False
 
-    # Get final observation for bootstrapping
+    # Get final observation and action mask for bootstrapping
     next_obs = obs
+    next_action_mask = action_mask
 
     rollout = Rollout(
         observations=observations,
@@ -257,7 +283,9 @@ def collect_rollout(
         behavior_cmd_log_probs=cmd_log_probs,
         behavior_angle_log_probs=angle_log_probs,
         behavior_values=values,
+        action_masks=action_masks,
         next_observation=next_obs.astype(np.float32),
+        next_action_mask=next_action_mask,
         next_done=next_done,
         worker_id=worker_id,
         weight_version=weight_version,
@@ -268,6 +296,7 @@ def collect_rollout(
     return RolloutResult(
         rollout=rollout,
         next_obs=next_obs,
+        next_action_mask=next_action_mask,
         current_episode_return=current_episode_return,
         current_episode_length=current_episode_length,
     )
