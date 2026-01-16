@@ -8,7 +8,7 @@ import torch
 from loguru import logger
 
 from scam.envs.impala_v2 import NUM_COMMANDS, OBS_SIZE, SC2GymEnv
-from scam.impala_v2.model import ActorCritic
+from scam.impala_v2.model import ActorCritic, ModelConfig
 from scam.settings import PROJECT_ROOT
 
 
@@ -22,7 +22,8 @@ def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level
     logger.info(f"Loading model from {model_path}")
 
     checkpoint = torch.load(model_path, map_location=device)
-    model = ActorCritic(OBS_SIZE, NUM_COMMANDS).to(device)
+    model_config = ModelConfig(**checkpoint["model_config"])
+    model = ActorCritic(model_config).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 

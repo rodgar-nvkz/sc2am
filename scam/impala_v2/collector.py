@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from loguru import logger
 
-from scam.envs.impala_v2 import NUM_COMMANDS, OBS_SIZE, SC2GymEnv
+from scam.envs.impala_v2 import SC2GymEnv
 from scam.impala_v2.config import IMPALAConfig
 from scam.impala_v2.interop import SharedWeights
 from scam.impala_v2.model import ActorCritic
@@ -67,7 +67,7 @@ class EpisodeBatch:
     num_episodes: int
 
     @classmethod
-    def from_episodes(cls, episodes: list[Episode], gamma: float = 0.99) -> "EpisodeBatch":
+    def from_episodes(cls, episodes: list[Episode], config: IMPALAConfig) -> "EpisodeBatch":
         """Create batch from list of episodes, computing V-trace per episode."""
 
         # Collect metadata
@@ -77,14 +77,14 @@ class EpisodeBatch:
         total_steps = sum(episode_lengths)
 
         # Pre-allocate concatenated arrays
-        observations = np.empty((total_steps, OBS_SIZE), dtype=np.float32)
+        observations = np.empty((total_steps, config.model.obs_size), dtype=np.float32)
         commands = np.empty(total_steps, dtype=np.int64)
         angles = np.empty((total_steps, 2), dtype=np.float32)
         rewards = np.empty(total_steps, dtype=np.float32)
         behavior_cmd_log_probs = np.empty(total_steps, dtype=np.float32)
         behavior_angle_log_probs = np.empty(total_steps, dtype=np.float32)
         behavior_values = np.empty(total_steps, dtype=np.float32)
-        action_masks = np.empty((total_steps, NUM_COMMANDS), dtype=bool)
+        action_masks = np.empty((total_steps, config.model.num_commands), dtype=bool)
         vtrace_targets = np.empty(total_steps, dtype=np.float32)
         advantages = np.empty(total_steps, dtype=np.float32)
 
@@ -105,7 +105,7 @@ class EpisodeBatch:
             action_masks[offset:end] = ep.action_masks
 
             # Compute V-trace for this episode (terminal state, bootstrap = 0)
-            ep_vtrace, ep_adv = compute_vtrace_episode(rewards=ep.rewards, values=ep.behavior_values, gamma=gamma)
+            ep_vtrace, ep_adv = compute_vtrace_episode(rewards=ep.rewards, values=ep.behavior_values, gamma=config.gamma)
             vtrace_targets[offset:end] = ep_vtrace
             advantages[offset:end] = ep_adv
 
@@ -182,7 +182,7 @@ def collector_worker(
 
     try:
         env = SC2GymEnv({"upgrade_level": config.upgrade_levels})
-        model = ActorCritic(OBS_SIZE, NUM_COMMANDS)
+        model = ActorCritic(config.model)
         model.eval()
 
         local_version = shared_weights.pull(model)
@@ -246,18 +246,16 @@ def collect_episode(env, model: ActorCritic, worker_id: int, weight_version: int
             # Get action from policy
             obs_tensor = torch.from_numpy(obs).unsqueeze(0)
             mask_tensor = torch.from_numpy(action_mask).unsqueeze(0)
-            command, angle, cmd_log_prob, angle_log_prob, _, value = model.get_action_and_value(
-                obs_tensor, action_mask=mask_tensor
-            )
+            output = model(obs_tensor, action_mask=mask_tensor)
 
-            commands.append(command.item())
-            angles.append(angle.squeeze(0).numpy())
-            cmd_log_probs.append(cmd_log_prob.item())
-            angle_log_probs.append(angle_log_prob.item())
-            values.append(value.item())
+            commands.append(output.command.action.item())
+            angles.append(output.angle.action.squeeze(0).numpy())
+            cmd_log_probs.append(output.command.log_prob.item())
+            angle_log_probs.append(output.angle.log_prob.item())
+            values.append(output.value.item())
 
             # Step environment
-            action = {"command": command.item(), "angle": angle.squeeze(0).numpy()}
+            action = {"command": output.command.action.item(), "angle": output.angle.action.squeeze(0).numpy()}
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 

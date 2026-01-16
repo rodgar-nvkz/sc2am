@@ -56,17 +56,18 @@ MAX_EPISODE_STEPS = 22.4 * 30  # 30 realtime seconds
 # Spawn configuration
 SPAWN_AREA_MIN = 0.0 + 15
 SPAWN_AREA_MAX = 32.0 - 15
-MIN_SPAWN_DISTANCE = 6.0
-MAX_SPAWN_DISTANCE = 6.0
+MIN_SPAWN_DISTANCE = 5.0
+MAX_SPAWN_DISTANCE = 8.0
 
 # Number of zerglings
 NUM_ZERGLINGS = 2
 
 # Observation space size:
-# Marine: own_health (1), weapon_cooldown (1) = 2
+# Time: time_remaining (1) = 1
+# Marine: own_health (1), weapon_cooldown (1), weapon_cooldown_norm (1) = 3
 # Per zergling (x2): distance (1), health (1), angle_sin (1), angle_cos (1) = 4
-# Total: 2 + 4*2 = 10
-OBS_SIZE = 10
+# Total: 1 + 3 + 4*2 = 12
+OBS_SIZE = 12
 
 @dataclass
 class UnitState:
@@ -183,10 +184,10 @@ class SC2GymEnv(gym.Env):
         ling_x = marine_x + spawn_distance * math.cos(spawn_angle)
         ling_y = marine_y + spawn_distance * math.sin(spawn_angle)
         # Spawn 2 zergling nearby
-        self.client.spawn_units(UNIT_ZERGLING, (ling_x, ling_y), owner=2, quantity=1)
-        shift_x = random.randint(-2500, 2500) / 1000.0
-        shift_y = random.randint(-2500, 2500) / 1000.0
-        self.client.spawn_units(UNIT_ZERGLING, (ling_x + shift_x, ling_y + shift_y), owner=2, quantity=1)
+        self.client.spawn_units(UNIT_ZERGLING, (ling_x, ling_y), owner=2, quantity=2)
+        # shift_x = random.randint(-2500, 2500) / 1000.0
+        # shift_y = random.randint(-2500, 2500) / 1000.0
+        # self.client.spawn_units(UNIT_ZERGLING, (ling_x + shift_x, ling_y + shift_y), owner=2, quantity=1)
 
         self.game.step(count=2)  # unit spawn takes two frames
 
@@ -235,6 +236,7 @@ class SC2GymEnv(gym.Env):
 
         # Marine's own state
         own_health = marine.health / marine.health_max
+        weapon_cooldown = int(bool(marine.weapon_cooldown))
         weapon_cooldown_norm = min(1.0, marine.weapon_cooldown / 15.0)
 
         # Get zergling observations (pad with None if dead)
@@ -247,11 +249,15 @@ class SC2GymEnv(gym.Env):
         z1_obs = self._get_zergling_obs(marine, z1)
         z2_obs = self._get_zergling_obs(marine, z2)
 
-        logger.debug(f"Marine health: {own_health}, weapon cooldown: {weapon_cooldown_norm}, upgrade level: {self.upgrade_level}")
+        # Time remaining (1.0 -> 0.0 as episode progresses)
+        time_remaining = 1.0 - (self.current_step / MAX_EPISODE_STEPS)
+
+        logger.debug(f"Marine health: {own_health}, cooldown: {weapon_cooldown_norm}")
         logger.debug(f"Zergling 1 obs: {z1_obs}")
         logger.debug(f"Zergling 2 obs: {z2_obs}")
+        logger.debug(f"Time remaining: {time_remaining}")
 
-        obs = [own_health, weapon_cooldown_norm, *z1_obs, *z2_obs]
+        obs = [time_remaining, own_health, weapon_cooldown, weapon_cooldown_norm, *z1_obs, *z2_obs]
 
         return np.array(obs, dtype=np.float32)
 
@@ -259,12 +265,13 @@ class SC2GymEnv(gym.Env):
         """Compute reward based on damage dealt/taken and terminal conditions"""
 
         if self.current_step >= MAX_EPISODE_STEPS:
-            return -1.0
+            return -0.01 * self.current_step * self.game_steps_per_env
 
         if not self.units[1] or not self.units[2]:
-            ally_health = sum([u.health / u.health_max for u in self.units[1]], 0.0) / 1.0
-            enemy_health = sum([u.health / u.health_max for u in self.units[2]], 0.0) / 2.0
-            return ally_health - enemy_health
+            # ally_health = sum([u.health / u.health_max for u in self.units[1]], 0.0) / 1.0
+            enemy_max_health = ZERGLING_MAX_HP * 2
+            enemy_health_left = sum([u.health for u in self.units[2]], 0.0)
+            return 1 - (enemy_health_left / enemy_max_health)
 
         return 0
 

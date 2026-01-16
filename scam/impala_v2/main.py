@@ -15,6 +15,7 @@ Architecture:
 """
 
 import argparse
+import dataclasses
 import multiprocessing as mp
 import time
 from collections import deque
@@ -23,7 +24,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from loguru import logger
 
 from scam.envs.impala_v2 import ACTION_MOVE, NUM_COMMANDS, OBS_SIZE
@@ -43,7 +43,11 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
     print(f"Using device: {device}")
 
     config = IMPALAConfig(total_episodes=total_episodes, num_workers=num_workers, upgrade_levels=[1])
-    model = ActorCritic(OBS_SIZE, NUM_COMMANDS).to(device)
+    config.model.obs_size = OBS_SIZE
+    config.model.num_commands = NUM_COMMANDS
+
+    model = ActorCritic(config.model).to(device)
+
     if resume:
         print(f"Resuming from checkpoint: {resume}")
         checkpoint = torch.load(resume, map_location=device)
@@ -94,7 +98,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
                     continue
 
             # Create batch with V-trace computed per episode
-            batch = EpisodeBatch.from_episodes(episodes, gamma=config.gamma)
+            batch = EpisodeBatch.from_episodes(episodes, config)
 
             # Track statistics
             episode_returns.extend(batch.episode_returns)
@@ -108,57 +112,58 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
             advantages = tensors["advantages"]
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
+            # Precompute move mask for angle loss
+            move_mask = (tensors["commands"] == ACTION_MOVE).float()
+
             # === Training loop: multiple epochs over the batch ===
             model.train()
             total_loss = 0.0
             total_entropy = 0.0
+            total_metrics: dict[str, float] = {}
 
             for _ in range(config.num_epochs):
-                _, _, new_cmd_log_probs, new_angle_log_probs, entropy, new_values = model.get_action_and_value(
-                    tensors["observations"],
-                    tensors["commands"],
-                    tensors["angles"],
-                    tensors["action_masks"],
+                # Forward pass through model
+                output = model(
+                    obs=tensors["observations"],
+                    command=tensors["commands"],
+                    angle=tensors["angles"],
+                    action_mask=tensors["action_masks"],
                 )
 
-                # === Command Policy Loss (PPO-style clipping) ===
-                old_cmd_log_probs = tensors["behavior_cmd_log_probs"]
-                cmd_ratio = torch.exp(new_cmd_log_probs - old_cmd_log_probs)
-                cmd_surr1 = cmd_ratio * advantages
-                cmd_surr2 = torch.clamp(cmd_ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon) * advantages
-                cmd_policy_loss = -torch.min(cmd_surr1, cmd_surr2).mean()
-
-                # === Angle Policy Loss (masked by MOVE commands) ===
-                old_angle_log_probs = tensors["behavior_angle_log_probs"]
-                move_mask = (tensors["commands"] == ACTION_MOVE).float()
-                angle_ratio = torch.exp(new_angle_log_probs - old_angle_log_probs)
-                angle_surr1 = angle_ratio * advantages * move_mask
-                angle_surr2 = (
-                    torch.clamp(angle_ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon)
-                    * advantages
-                    * move_mask
+                # Compute losses using encapsulated head methods
+                losses = model.compute_losses(
+                    output=output,
+                    old_cmd_log_prob=tensors["behavior_cmd_log_probs"],
+                    old_angle_log_prob=tensors["behavior_angle_log_probs"],
+                    advantages=advantages,
+                    vtrace_targets=tensors["vtrace_targets"],
+                    move_mask=move_mask,
+                    clip_epsilon=config.clip_epsilon,
                 )
-                num_moves = move_mask.sum().clamp(min=1.0)
-                angle_policy_loss = -torch.min(angle_surr1, angle_surr2).sum() / num_moves
 
-                # === Value Loss ===
-                value_loss = F.smooth_l1_loss(new_values, tensors["vtrace_targets"])
+                # Combine losses
+                cmd_loss = losses["command"].loss
+                angle_loss = losses["angle"].loss
+                value_loss = losses["value"].loss
+                entropy = output.total_entropy.mean()
 
-                # === Entropy Loss ===
-                entropy_loss = -entropy.mean()
+                policy_loss = cmd_loss + angle_loss
+                loss = policy_loss + config.value_coef * value_loss - config.entropy_coef * entropy
 
-                # === Total Loss ===
-                policy_loss = cmd_policy_loss + angle_policy_loss
-                loss = policy_loss + config.value_coef * value_loss + config.entropy_coef * entropy_loss
-
-                # === Backward pass ===
+                # Backward pass
                 optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
                 optimizer.step()
 
                 total_loss += loss.item()
-                total_entropy += entropy.mean().item()
+                total_entropy += entropy.item()
+
+                # Accumulate metrics
+                for name, head_loss in losses.items():
+                    for metric_name, metric_value in head_loss.metrics.items():
+                        key = f"{name}_{metric_name}"
+                        total_metrics[key] = total_metrics.get(key, 0.0) + metric_value
 
             update_count += 1
             lr_scheduler.step()
@@ -218,9 +223,10 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
     checkpoint = {
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        "model_config": dataclasses.asdict(config.model),
         "collected_episodes": collected_episodes,
         "update_count": update_count,
-        "config": config.__dict__,
+        "config": dataclasses.asdict(config),
     }
 
     model_path = model_dir / f"impala_v2_{timestamp}.pt"

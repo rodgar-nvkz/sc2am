@@ -1,9 +1,14 @@
 import dataclasses
 
+from scam.impala_v2.model.config import ModelConfig
+
 
 @dataclasses.dataclass
 class IMPALAConfig:
     """IMPALA training configuration - simplified for 1 game = 1 episode."""
+
+    # Model configuration
+    model: ModelConfig = dataclasses.field(default_factory=ModelConfig)
 
     # Batch settings
     num_workers: int = 8
