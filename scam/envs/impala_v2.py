@@ -200,8 +200,8 @@ class SC2GymEnv(gym.Env):
             self.client.set_unit_life(marine.tag, marine.health_max * self.hp_multiplier)
 
         # Command zerglings to attack marine
-        for zergling in self.units[2]:
-            self.client.unit_attack_unit(zergling.tag, marine.tag)
+        # for zergling in self.units[2]:
+        #     self.client.unit_attack_unit(zergling.tag, marine.tag)
 
         logger.debug(f"Spawned Marine and 2 Zerglings (HP multiplier: {self.hp_multiplier})")
 
@@ -295,8 +295,11 @@ class SC2GymEnv(gym.Env):
     def get_action_mask(self) -> np.ndarray:
         """ACTIONS=[MOVE, ATTACK_Z1, ATTACK_Z2]"""
         mask = np.ones(NUM_COMMANDS, dtype=bool)
-        mask[ACTION_ATTACK_Z1] = len(self.units[2]) > 0
-        mask[ACTION_ATTACK_Z2] = len(self.units[2]) > 1
+        marine = self.units[1][0] if self.units[1] else None
+        zerglings = self.units[2]
+        # alive and in attack range
+        mask[ACTION_ATTACK_Z1] = len(zerglings) > 0 and marine and zerglings[0].distance_to(marine) < 5
+        mask[ACTION_ATTACK_Z2] = len(zerglings) > 1 and marine and zerglings[1].distance_to(marine) < 5
         return mask
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:

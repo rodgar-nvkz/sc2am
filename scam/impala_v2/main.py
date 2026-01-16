@@ -42,13 +42,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
     device = torch.device("cpu")
     print(f"Using device: {device}")
 
-    config = IMPALAConfig(
-        total_episodes=total_episodes,
-        num_workers=num_workers,
-        episodes_per_batch=num_workers,
-        upgrade_levels=[1],
-    )
-
+    config = IMPALAConfig(total_episodes=total_episodes, num_workers=num_workers, upgrade_levels=[1])
     model = ActorCritic(OBS_SIZE, NUM_COMMANDS).to(device)
     if resume:
         print(f"Resuming from checkpoint: {resume}")
@@ -248,7 +242,7 @@ def main():
     # Train command
     train_parser = subparsers.add_parser("train", help="Train a new agent")
     train_parser.add_argument("-e", "--episodes", type=int, default=10_000, help="Total training episodes")
-    train_parser.add_argument("-w", "--workers", type=int, default=8, help="Number of worker processes")
+    train_parser.add_argument("-w", "--workers", type=int, default=10, help="Number of worker processes")
     train_parser.add_argument("-s", "--seed", type=int, default=42, help="Random seed")
     train_parser.add_argument("-r", "--resume", type=str, default=None, help="Path to checkpoint to resume from")
 
