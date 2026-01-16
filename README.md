@@ -40,3 +40,5 @@ SC2AM prioritizes RL needs providing Gymnasium-native interface, lean state extr
 - Go-Explore (Uber AI, Montezuma’s Revenge)
 - Curriculum Learning
 - Quality Diversity (MAP-Elites)
+- QR-DQN (Quantile Regression). Add:  risk-sensitive advantages (using lower quantiles instead of mean)
+- Self-play...

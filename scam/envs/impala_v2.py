@@ -57,7 +57,7 @@ MAX_EPISODE_STEPS = 22.4 * 30  # 30 realtime seconds
 SPAWN_AREA_MIN = 0.0 + 15
 SPAWN_AREA_MAX = 32.0 - 15
 MIN_SPAWN_DISTANCE = 6.0
-MAX_SPAWN_DISTANCE = 9.0
+MAX_SPAWN_DISTANCE = 6.0
 
 # Number of zerglings
 NUM_ZERGLINGS = 2
@@ -298,8 +298,8 @@ class SC2GymEnv(gym.Env):
         marine = self.units[1][0] if self.units[1] else None
         zerglings = self.units[2]
         # alive and in attack range
-        mask[ACTION_ATTACK_Z1] = len(zerglings) > 0 and marine and zerglings[0].distance_to(marine) < 5
-        mask[ACTION_ATTACK_Z2] = len(zerglings) > 1 and marine and zerglings[1].distance_to(marine) < 5
+        mask[ACTION_ATTACK_Z1] = len(zerglings) > 0 and marine and zerglings[0].distance_to(marine) < 6
+        mask[ACTION_ATTACK_Z2] = len(zerglings) > 1 and marine and zerglings[1].distance_to(marine) < 6
         return mask
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
