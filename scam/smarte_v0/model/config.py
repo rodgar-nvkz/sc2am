@@ -1,6 +1,6 @@
 """Model configuration for LSTM-based ActorCritic architecture."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -10,24 +10,39 @@ class ModelConfig:
     Architecture:
         obs (obs_size) → VectorEncoder → LSTM → [ActorHead, CriticHead]
 
-    Action space (40 discrete actions):
-        - 0-35: MOVE in direction (angle = i * 10°)
-        - 36: ATTACK_Z1
-        - 37: ATTACK_Z2
-        - 38: STOP
-        - 39: SKIP (no-op)
+    Action space (num_move_directions + 4 discrete actions):
+        - 0 to num_move_directions-1: MOVE in direction (angle = i * 360°/num_move_directions)
+        - num_move_directions: ATTACK_Z1
+        - num_move_directions+1: ATTACK_Z2
+        - num_move_directions+2: STOP
+        - num_move_directions+3: SKIP (no-op)
+
+    Default: 4 move directions (N, E, S, W) + 4 other = 8 actions total
     """
 
     # Observation space
     obs_size: int = 12
 
-    # Action space (40 discrete actions)
-    num_actions: int = 40
-    num_move_directions: int = 36  # 360° / 10° = 36 directions
-    action_attack_z1: int = 36
-    action_attack_z2: int = 37
-    action_stop: int = 38
-    action_skip: int = 39
+    # Action space - configurable move directions
+    # 4 = N, E, S, W (90° each) - simple, good for initial testing
+    # 8 = 45° increments
+    # 36 = 10° increments (fine-grained)
+    num_move_directions: int = 4
+
+    # These are computed from num_move_directions in __post_init__
+    num_actions: int = field(init=False)
+    action_attack_z1: int = field(init=False)
+    action_attack_z2: int = field(init=False)
+    action_stop: int = field(init=False)
+    action_skip: int = field(init=False)
+
+    def __post_init__(self):
+        """Compute action indices based on num_move_directions."""
+        self.num_actions = self.num_move_directions + 4
+        self.action_attack_z1 = self.num_move_directions
+        self.action_attack_z2 = self.num_move_directions + 1
+        self.action_stop = self.num_move_directions + 2
+        self.action_skip = self.num_move_directions + 3
 
     # Encoder settings
     embed_size: int = 64

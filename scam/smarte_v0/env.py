@@ -2,12 +2,14 @@
 Marine vs 2 Zerglings RL Environment
 
 A Gymnasium environment for training a Marine agent against 2 scripted Zerglings.
-Uses vector observations and discrete action space with 40 actions:
-    - 0-35: MOVE in direction (angle = i * 10°)
-    - 36: ATTACK_Z1
-    - 37: ATTACK_Z2
-    - 38: STOP
-    - 39: SKIP (no-op, continue previous action)
+Uses vector observations and discrete action space:
+    - 0 to num_move_directions-1: MOVE in direction (angle = i * 360°/num_move_directions)
+    - num_move_directions: ATTACK_Z1
+    - num_move_directions+1: ATTACK_Z2
+    - num_move_directions+2: STOP
+    - num_move_directions+3: SKIP (no-op, continue previous action)
+
+Default: 4 move directions (E, N, W, S at 0°, 90°, 180°, 270°) + 4 other = 8 actions
 """
 
 import math
@@ -41,13 +43,9 @@ ZERGLING_MAX_HP = 35.0
 ZERGLING_RANGE = 0.1  # Melee
 ZERGLING_SPEED = 4.13
 
-# Action space constants
-NUM_MOVE_DIRECTIONS = 36  # 360° / 10° = 36 directions
-ACTION_ATTACK_Z1 = 36
-ACTION_ATTACK_Z2 = 37
-ACTION_STOP = 38
-ACTION_SKIP = 39
-NUM_ACTIONS = 40
+# Default action space (4 move directions)
+# Can be overridden via params["num_move_directions"]
+DEFAULT_NUM_MOVE_DIRECTIONS = 4
 
 # Movement step size (how far to move per action)
 MOVE_STEP_SIZE = 2.0
@@ -70,30 +68,6 @@ NUM_ZERGLINGS = 2
 # Per zergling (x2): distance (1), health (1), angle_sin (1), angle_cos (1) = 4
 # Total: 1 + 3 + 4*2 = 12
 OBS_SIZE = 12
-
-
-def action_to_angle(action: int) -> float:
-    """Convert move action index to angle in radians.
-
-    Args:
-        action: Action index (0-35 for move directions)
-
-    Returns:
-        Angle in radians (0 = east/right, counter-clockwise)
-    """
-    if 0 <= action < NUM_MOVE_DIRECTIONS:
-        return action * (2 * math.pi / NUM_MOVE_DIRECTIONS)
-    raise ValueError(f"Action {action} is not a move action")
-
-
-def is_move_action(action: int) -> bool:
-    """Check if action is a move action."""
-    return 0 <= action < NUM_MOVE_DIRECTIONS
-
-
-def is_attack_action(action: int) -> bool:
-    """Check if action is an attack action."""
-    return action in (ACTION_ATTACK_Z1, ACTION_ATTACK_Z2)
 
 
 @dataclass
@@ -134,12 +108,14 @@ class UnitState:
 class SC2GymEnv(gym.Env):
     """1 Marine vs 2 Zerglings environment with discrete action space.
 
-    Action space: Discrete(40)
-        - 0-35: MOVE in direction (angle = i * 10°)
-        - 36: ATTACK_Z1
-        - 37: ATTACK_Z2
-        - 38: STOP (halt unit)
-        - 39: SKIP (no-op, continue previous action)
+    Action space: Discrete(num_move_directions + 4)
+        - 0 to num_move_directions-1: MOVE in direction
+        - num_move_directions: ATTACK_Z1
+        - num_move_directions+1: ATTACK_Z2
+        - num_move_directions+2: STOP (halt unit)
+        - num_move_directions+3: SKIP (no-op, continue previous action)
+
+    Default: 4 move directions (E=0, N=1, W=2, S=3) giving 8 total actions.
     """
 
     metadata = {"name": "sc2_mv2z_v3_discrete", "render_modes": []}
@@ -148,8 +124,18 @@ class SC2GymEnv(gym.Env):
         super().__init__()
         self.params = params or {}
 
-        # Discrete action space with 40 actions
-        self.action_space = spaces.Discrete(NUM_ACTIONS)
+        # Configurable action space
+        self.num_move_directions = self.params.get("num_move_directions", DEFAULT_NUM_MOVE_DIRECTIONS)
+        self.num_actions = self.num_move_directions + 4
+
+        # Compute action indices
+        self.action_attack_z1 = self.num_move_directions
+        self.action_attack_z2 = self.num_move_directions + 1
+        self.action_stop = self.num_move_directions + 2
+        self.action_skip = self.num_move_directions + 3
+
+        # Discrete action space
+        self.action_space = spaces.Discrete(self.num_actions)
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(OBS_SIZE,), dtype=np.float32)
 
         self.game = SC2SingleGame([Terran, Zerg]).launch()
@@ -163,8 +149,30 @@ class SC2GymEnv(gym.Env):
         self.hp_multiplier = 1
         self.init_game()
 
+    def _action_to_angle(self, action: int) -> float:
+        """Convert move action index to angle in radians.
+
+        Args:
+            action: Action index (0 to num_move_directions-1)
+
+        Returns:
+            Angle in radians (0 = east/right, counter-clockwise)
+        """
+        if 0 <= action < self.num_move_directions:
+            return action * (2 * math.pi / self.num_move_directions)
+        raise ValueError(f"Action {action} is not a move action")
+
+    def _is_move_action(self, action: int) -> bool:
+        """Check if action is a move action."""
+        return 0 <= action < self.num_move_directions
+
+    def _is_attack_action(self, action: int) -> bool:
+        """Check if action is an attack action."""
+        return action in (self.action_attack_z1, self.action_attack_z2)
+
     def init_game(self) -> None:
         logger.info(f"Initializing SC2GymEnv with params: {self.params}")
+        logger.info(f"Action space: {self.num_actions} actions ({self.num_move_directions} move + 4 other)")
         self.client.enable_enemy_control()
         for _ in range(self.upgrade_level):
             self.client.research_upgrades()
@@ -285,52 +293,44 @@ class SC2GymEnv(gym.Env):
         - Timeout: small penalty
         """
         if self.current_step >= MAX_EPISODE_STEPS:
-            return -1
+            return -0.01 * self.current_step * self.game_steps_per_env
 
         if not self.units[1] or not self.units[2]:
             # Terminal state
             enemy_max_health = ZERGLING_MAX_HP * 2
             enemy_health_left = sum([u.health for u in self.units[2]], 0.0)
-            return -(enemy_health_left / enemy_max_health)
+            return 1 - (enemy_health_left / enemy_max_health)
 
         return 0
 
     def _agent_action(self, action: int) -> None:
-        """Execute discrete action.
-
-        Actions:
-            0-35: MOVE in direction (angle = action * 10°)
-            36: ATTACK_Z1
-            37: ATTACK_Z2
-            38: STOP
-            39: SKIP (no-op)
-        """
+        """Execute discrete action."""
         logger.debug(f"Agent action: {action}")
 
         marine = self.units[1][0]
         zerglings = self.units[2]
 
-        if is_move_action(action):
+        if self._is_move_action(action):
             # Move in specified direction
-            angle = action_to_angle(action)
+            angle = self._action_to_angle(action)
             dx = math.cos(angle) * MOVE_STEP_SIZE
             dy = math.sin(angle) * MOVE_STEP_SIZE
             target_x = marine.x + dx
             target_y = marine.y + dy
             self.client.unit_move(marine.tag, (target_x, target_y))
 
-        elif action == ACTION_ATTACK_Z1:
+        elif action == self.action_attack_z1:
             if len(zerglings) > 0:
                 self.client.unit_attack_unit(marine.tag, zerglings[0].tag)
 
-        elif action == ACTION_ATTACK_Z2:
+        elif action == self.action_attack_z2:
             if len(zerglings) > 1:
                 self.client.unit_attack_unit(marine.tag, zerglings[1].tag)
 
-        elif action == ACTION_STOP:
+        elif action == self.action_stop:
             self.client.unit_stop(marine.tag)
 
-        elif action == ACTION_SKIP:
+        elif action == self.action_skip:
             # Do nothing - continue previous action
             pass
 
@@ -356,7 +356,25 @@ class SC2GymEnv(gym.Env):
         obs = self._compute_observation()
         reward = self._compute_reward()
         truncated = self.current_step >= MAX_EPISODE_STEPS
-        return obs, reward, self.terminated, truncated, {"won": reward > 0}
+        # Win = marine survived AND all zerglings dead
+        won = len(self.units[1]) > 0 and len(self.units[2]) == 0
+        return obs, reward, self.terminated, truncated, {"won": won}
 
     def close(self) -> None:
         self.game.close()
+
+
+# Module-level helpers for backwards compatibility and external use
+def get_num_actions(num_move_directions: int = DEFAULT_NUM_MOVE_DIRECTIONS) -> int:
+    """Get total number of actions for given move directions."""
+    return num_move_directions + 4
+
+
+def get_action_indices(num_move_directions: int = DEFAULT_NUM_MOVE_DIRECTIONS) -> dict[str, int]:
+    """Get action index mapping for given move directions."""
+    return {
+        "attack_z1": num_move_directions,
+        "attack_z2": num_move_directions + 1,
+        "stop": num_move_directions + 2,
+        "skip": num_move_directions + 3,
+    }

@@ -15,9 +15,10 @@ from .env import SC2GymEnv
 from .model import ActorCritic, ModelConfig
 
 
-def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level: int = 0):
+def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level: int = 0, use_cuda: bool = False):
     """Evaluate a trained LSTM model with discrete action space."""
-    device = torch.device("cpu")
+    device = torch.device("cuda" if use_cuda and torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
     if model_path is None:
         # Try to find the latest model
@@ -86,9 +87,10 @@ def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level
     print(f"Average length: {np.mean(total_lengths):.1f} ± {np.std(total_lengths):.1f}")
 
 
-def eval_model_stochastic(num_games: int = 10, model_path: str | None = None, upgrade_level: int = 0):
+def eval_model_stochastic(num_games: int = 10, model_path: str | None = None, upgrade_level: int = 0, use_cuda: bool = False):
     """Evaluate using stochastic policy (sampling from distribution)."""
-    device = torch.device("cpu")
+    device = torch.device("cuda" if use_cuda and torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
     if model_path is None:
         patterns = ["artifacts/models/lstm_v0_*.pt", "artifacts/models/impala_v2_*.pt"]

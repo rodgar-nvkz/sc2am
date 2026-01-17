@@ -18,7 +18,7 @@ class SharedWeights:
         """Copy model weights to shared memory."""
         params = nn.utils.parameters_to_vector(model.parameters())
         np_array = np.frombuffer(self.shared_array, dtype=np.float32)
-        np.copyto(np_array, params.detach().numpy())
+        np.copyto(np_array, params.detach().cpu().numpy())
 
         with self.version.get_lock():
             self.version.value += 1
