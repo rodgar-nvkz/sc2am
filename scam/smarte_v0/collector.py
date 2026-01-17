@@ -5,6 +5,7 @@ Each worker collects complete episodes and sends them to the learner.
 The LSTM hidden state is tracked during collection and reset at episode boundaries.
 """
 
+import os
 import signal
 from dataclasses import dataclass
 from typing import Any
@@ -190,6 +191,14 @@ def collector_worker(
     # Ignore SIGINT in workers (let main handle it)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
+    # === PERFORMANCE OPTIMIZATIONS ===
+    # Limit PyTorch to 1 thread per worker to avoid CPU oversubscription
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+    # Also set OpenMP/MKL threads via environment (may already be set by parent)
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+
     try:
         env = SC2GymEnv({
             "upgrade_level": config.upgrade_levels,
@@ -199,13 +208,18 @@ def collector_worker(
         model.eval()
 
         local_version = shared_weights.pull(model)
+        episodes_since_sync = 0
 
         while not shutdown_event.is_set():
-            # Check for weight updates before each episode
-            current_version = shared_weights.get_version()
-            if current_version > local_version:
-                local_version = shared_weights.pull(model)
-                logger.debug(f"Worker {worker_id} updated to weight version {local_version}")
+            # Check for weight updates periodically (not every episode)
+            # This reduces lock contention significantly
+            episodes_since_sync += 1
+            if episodes_since_sync >= config.weight_sync_interval:
+                current_version = shared_weights.get_version()
+                if current_version > local_version:
+                    local_version = shared_weights.pull(model)
+                    logger.debug(f"Worker {worker_id} updated to weight version {local_version}")
+                episodes_since_sync = 0
 
             # Collect one complete episode
             episode = collect_episode(
@@ -256,12 +270,17 @@ def collect_episode(
     # Initialize LSTM hidden state
     hidden = model.get_initial_hidden(batch_size=1)
 
-    with torch.no_grad():
+    # Pre-allocate observation tensor for reuse (avoid repeated allocations)
+    obs_tensor = torch.empty(1, obs.shape[0], dtype=torch.float32)
+
+    # Use inference_mode for faster execution (disables autograd more aggressively than no_grad)
+    with torch.inference_mode():
         while not done and steps < max_steps:
             observations.append(obs)
 
             # Get action from policy (with LSTM)
-            obs_tensor = torch.from_numpy(obs).unsqueeze(0)
+            # Reuse pre-allocated tensor
+            obs_tensor[0].copy_(torch.from_numpy(obs))
             output = model(obs_tensor, hidden=hidden)
 
             # Update hidden state for next step

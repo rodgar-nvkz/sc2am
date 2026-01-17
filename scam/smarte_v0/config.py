@@ -24,6 +24,9 @@ class IMPALAConfig:
     c_bar: float = 1.0  # Truncation for trace coefficients
     rho_bar: float = 1.0  # Truncation for importance weights
 
+    # Worker settings
+    weight_sync_interval: int = 5  # Sync weights every N episodes (reduces lock contention)
+
     # PPO-style clipping
     clip_epsilon: float = 0.2
 

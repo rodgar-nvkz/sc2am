@@ -295,6 +295,9 @@ class SC2GymEnv(gym.Env):
         if self.current_step >= MAX_EPISODE_STEPS:
             return -0.01 * self.current_step * self.game_steps_per_env
 
+        if not self.units[2]:
+            return 2  # Win: all zerglings dead
+
         if not self.units[1] or not self.units[2]:
             # Terminal state
             enemy_max_health = ZERGLING_MAX_HP * 2

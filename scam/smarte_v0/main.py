@@ -9,11 +9,19 @@ Key optimizations:
 - Single forward pass for all episodes
 - torch.compile for kernel fusion
 - GPU-optimized tensor operations
+- CPU thread limiting to prevent oversubscription
+- Lock-free weight sharing between processes
 
 Data flow:
     Worker 1: [SC2 + Policy + LSTM] -> episode -> Queue ->
     Worker 2: [SC2 + Policy + LSTM] -> episode -> Queue ->  Main: V-trace -> Train -> Broadcast
     Worker N: [SC2 + Policy + LSTM] -> episode -> Queue ->
+
+Performance notes:
+- Each worker runs SC2 (CPU-heavy) + model inference (CPU)
+- Workers are limited to 1 PyTorch thread each to avoid CPU oversubscription
+- Weight sync happens every N episodes to reduce lock contention
+- Main process uses GPU for training (batch forward + backward)
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import multiprocessing as mp
+import os
 import time
 from collections import deque
 from multiprocessing import Event, Process, Queue
@@ -47,6 +56,20 @@ def train(
     compile_model: bool = True,
 ):
     """Main training loop with batched GPU processing."""
+    # === CRITICAL PERFORMANCE SETTINGS ===
+    # Set environment variables BEFORE spawning workers (they inherit these)
+    # This prevents CPU oversubscription when running multiple workers
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+    # Also set for PyTorch in main process (workers will set their own)
+    # Main process can use more threads since it's doing GPU work mostly
+    torch.set_num_threads(2)
+    torch.set_num_interop_threads(2)
+
     mp.set_start_method("spawn")
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -68,10 +91,11 @@ def train(
         model.load_state_dict(checkpoint["model_state_dict"])
 
     # Compile model for faster execution (PyTorch 2.0+)
+    # Note: For training with variable batch sizes, 'default' mode is often better
+    # than 'reduce-overhead' which is optimized for repeated same-shape inference
     if compile_model and hasattr(torch, "compile"):
         print("Compiling model with torch.compile...")
-        # Use reduce-overhead mode for smaller batches
-        compiled_model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
+        compiled_model = torch.compile(model, mode="default", fullgraph=False)
         print("Model compiled successfully")
 
     # Print model info
@@ -95,6 +119,7 @@ def train(
         workers.append(p)
 
     print(f"Started {num_workers} workers")
+    print("Thread settings: OMP_NUM_THREADS=1, Workers limited to 1 thread each")
 
     # Optimizer and LR scheduler
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, eps=1e-4)

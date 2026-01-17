@@ -33,7 +33,11 @@ def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level
     logger.info(f"Loading model from {model_path}")
 
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    model_config = ModelConfig(**checkpoint["model_config"])
+    # Filter out computed fields that are now generated in __post_init__
+    config_dict = checkpoint["model_config"]
+    computed_fields = {"num_actions", "action_attack_z1", "action_attack_z2", "action_stop", "action_skip"}
+    filtered_config = {k: v for k, v in config_dict.items() if k not in computed_fields}
+    model_config = ModelConfig(**filtered_config)
     model = ActorCritic(model_config).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -41,7 +45,10 @@ def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level
     wins = 0
     total_rewards = []
     total_lengths = []
-    env = SC2GymEnv({"upgrade_level": [upgrade_level]})
+    env = SC2GymEnv({
+        "upgrade_level": [upgrade_level],
+        "num_move_directions": model_config.num_move_directions,
+    })
 
     logger.info(f"\nEvaluating for {num_games} games...")
     for game in range(num_games):
@@ -104,7 +111,11 @@ def eval_model_stochastic(num_games: int = 10, model_path: str | None = None, up
     logger.info(f"Loading model from {model_path}")
 
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    model_config = ModelConfig(**checkpoint["model_config"])
+    # Filter out computed fields that are now generated in __post_init__
+    config_dict = checkpoint["model_config"]
+    computed_fields = {"num_actions", "action_attack_z1", "action_attack_z2", "action_stop", "action_skip"}
+    filtered_config = {k: v for k, v in config_dict.items() if k not in computed_fields}
+    model_config = ModelConfig(**filtered_config)
     model = ActorCritic(model_config).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -112,7 +123,10 @@ def eval_model_stochastic(num_games: int = 10, model_path: str | None = None, up
     wins = 0
     total_rewards = []
     total_lengths = []
-    env = SC2GymEnv({"upgrade_level": [upgrade_level]})
+    env = SC2GymEnv({
+        "upgrade_level": [upgrade_level],
+        "num_move_directions": model_config.num_move_directions,
+    })
 
     logger.info(f"\nEvaluating (stochastic) for {num_games} games...")
     for game in range(num_games):
