@@ -16,10 +16,10 @@ SC2AM prioritizes RL needs providing Gymnasium-native interface, lean state extr
 
 ## Progress
 
-| Date | Description | Environment | Code |
-|------|-------------|-------------|------|
-| 20250111 | Egocentric WASD kiting | 1v1 flat env | `train/ppo_v0.py` |
-| 20250114 | World-space polar coords | 1v2 flat env | `impala_v2/main.py` |
+| Date | Task | Problem | Description | Environment | Code |
+|------|------|---------|-------------|-------------|------|
+| 20250111 | Fire-Kite nearest enemy | Far enemy anreadable | Egocentric WASD kiting | 1v1 flat env | `train/ppo_v0.py` |
+| 20250114 | Seek and fire far enemy | Can not combine chase and kite policy | World-space polar coords | 1v2 flat env | `impala_v2/main.py` |
 
 
 ## RL References
