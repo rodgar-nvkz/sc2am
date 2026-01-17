@@ -203,6 +203,8 @@ def collector_worker(
         env = SC2GymEnv({
             "upgrade_level": config.upgrade_levels,
             "num_move_directions": config.model.num_move_directions,
+            "reward_strategy": config.reward_strategy,
+            "reward_params": config.reward_params,
         })
         model = ActorCritic(config.model)
         model.eval()

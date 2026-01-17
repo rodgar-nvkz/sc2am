@@ -1,4 +1,5 @@
 import dataclasses
+from typing import Literal
 
 from .model.config import ModelConfig
 
@@ -35,6 +36,12 @@ class IMPALAConfig:
     value_coef: float = 0.5
     max_grad_norm: float = 40.0
 
+    # Entropy annealing: high early entropy encourages exploration (critical for chase learning)
+    # Start high to explore movement options, decay as policy converges
+    entropy_coef_start: float = 0.05  # 5x default, encourages exploration early
+    entropy_coef_end: float = 0.005  # Decay to this value
+    entropy_anneal: bool = True  # Enable entropy annealing
+
     # Optimizer
     lr: float = 5e-4
     lr_eps: float = 1e-4
@@ -43,3 +50,19 @@ class IMPALAConfig:
 
     # Environment
     upgrade_levels: list = dataclasses.field(default_factory=list)
+
+    # Reward strategy
+    reward_strategy: str = "simple"
+    reward_params: dict = dataclasses.field(default_factory=lambda: {})
+
+    def get_entropy_coef(self, progress: float) -> float:
+        """Get entropy coefficient based on training progress (0 to 1).
+
+        Higher entropy early encourages exploration, which is critical for
+        discovering that movement toward enemies leads to combat rewards.
+        """
+        if not self.entropy_anneal:
+            return self.entropy_coef
+
+        # Linear decay from start to end
+        return self.entropy_coef_start + (self.entropy_coef_end - self.entropy_coef_start) * progress

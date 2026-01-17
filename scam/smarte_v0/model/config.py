@@ -27,7 +27,7 @@ class ModelConfig:
     # 4 = N, E, S, W (90° each) - simple, good for initial testing
     # 8 = 45° increments
     # 36 = 10° increments (fine-grained)
-    num_move_directions: int = 4
+    num_move_directions: int = 8
 
     # These are computed from num_move_directions in __post_init__
     num_actions: int = field(init=False)

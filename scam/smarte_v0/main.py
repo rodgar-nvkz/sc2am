@@ -214,11 +214,13 @@ def train(
                 # Compute value loss
                 value_loss = torch.nn.functional.smooth_l1_loss(values_flat, vtrace_targets_flat)
 
-                # Entropy bonus
+                # Entropy bonus (with annealing for better exploration early on)
                 entropy = entropies_flat.mean()
+                progress = collected_episodes / total_episodes
+                entropy_coef = config.get_entropy_coef(progress)
 
                 # Total loss
-                loss = policy_loss + config.value_coef * value_loss - config.entropy_coef * entropy
+                loss = policy_loss + config.value_coef * value_loss - entropy_coef * entropy
 
                 # Backward pass
                 optimizer.zero_grad()
@@ -251,6 +253,9 @@ def train(
             # Weight staleness
             avg_staleness = np.mean(shared_weights.get_version() - np.array(batch.weight_versions))
 
+            # Get current entropy coefficient for logging
+            current_entropy_coef = config.get_entropy_coef(collected_episodes / total_episodes)
+
             print(
                 f"Update {update_count:4d} | "
                 f"Eps: {collected_episodes:>6,}/{total_episodes:,} | "
@@ -259,7 +264,7 @@ def train(
                 f"Len: {avg_length:>5.0f} | "
                 f"Win: {win_rate:>5.1f}% | "
                 f"Loss: {avg_loss:>6.3f} (π:{avg_policy_loss:.3f} v:{avg_value_loss:.3f}) | "
-                f"Ent: {avg_entropy:>5.2f} | "
+                f"Ent: {avg_entropy:>5.2f} (β:{current_entropy_coef:.3f}) | "
                 f"Stale: {avg_staleness:>4.1f} | "
                 f"LR: {optimizer.param_groups[0]['lr']:.2e}"
             )

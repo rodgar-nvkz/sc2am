@@ -26,6 +26,8 @@ from sympy.polys.matrices.linsolve import defaultdict
 
 from scam.infra.game import SC2SingleGame, Terran, Zerg
 
+from .rewards import RewardContext, RewardStrategy, create_reward_strategy
+
 logger.remove()
 logger.add(sys.stderr, level="INFO")
 
@@ -51,13 +53,13 @@ DEFAULT_NUM_MOVE_DIRECTIONS = 4
 MOVE_STEP_SIZE = 2.0
 
 # Environment constants
-MAX_EPISODE_STEPS = 22.4 * 30  # 30 realtime seconds
+MAX_EPISODE_STEPS = int(22.4 * 30)  # 30 realtime seconds
 
 # Spawn configuration
 SPAWN_AREA_MIN = 0.0 + 15
 SPAWN_AREA_MAX = 32.0 - 15
-MIN_SPAWN_DISTANCE = 5.0
-MAX_SPAWN_DISTANCE = 8.0
+MIN_SPAWN_DISTANCE = 14
+MAX_SPAWN_DISTANCE = 14
 
 # Number of zerglings
 NUM_ZERGLINGS = 2
@@ -68,6 +70,29 @@ NUM_ZERGLINGS = 2
 # Per zergling (x2): distance (1), health (1), angle_sin (1), angle_cos (1) = 4
 # Total: 1 + 3 + 4*2 = 12
 OBS_SIZE = 12
+
+
+@dataclass
+class DamageTracker:
+    """Tracks cumulative and per-step damage dealt/taken from sc2clientprotocol score data."""
+    dealt_acc: float = 0.0
+    taken_acc: float = 0.0
+    dealt_step: float = 0.0
+    taken_step: float = 0.0
+
+    def update(self, score_details) -> None:
+        dealt = score_details.total_damage_dealt.life + score_details.total_damage_dealt.shields
+        taken = score_details.total_damage_taken.life + score_details.total_damage_taken.shields
+        self.dealt_step = dealt - self.dealt_acc
+        self.taken_step = taken - self.taken_acc
+        self.dealt_acc = dealt
+        self.taken_acc = taken
+
+    def reset(self) -> None:
+        self.dealt_acc = 0.0
+        self.taken_acc = 0.0
+        self.dealt_step = 0.0
+        self.taken_step = 0.0
 
 
 @dataclass
@@ -144,6 +169,14 @@ class SC2GymEnv(gym.Env):
         self.current_step: int = 0
         self.terminated: bool = False
 
+        # Damage tracking for per-step rewards
+        self.damage = DamageTracker()
+
+        # Reward strategy (configurable via params)
+        reward_strategy_name = self.params.get("reward_strategy", "simple")
+        reward_params = self.params.get("reward_params", {})
+        self.reward_strategy: RewardStrategy = create_reward_strategy(reward_strategy_name, **reward_params)
+
         self.upgrade_level = random.choice(self.params.get("upgrade_level", [0, 1, 2]))
         self.game_steps_per_env = 2
         self.hp_multiplier = 1
@@ -189,6 +222,9 @@ class SC2GymEnv(gym.Env):
 
         for units in self.units.values():
             units.sort(key=lambda u: u.tag)
+
+        # Extract damage info from score
+        self.damage.update(obs.observation.score.score_details)
 
         self.terminated = not all((self.units[1], self.units[2]))
         logger.debug(
@@ -286,25 +322,20 @@ class SC2GymEnv(gym.Env):
         return np.array(obs, dtype=np.float32)
 
     def _compute_reward(self) -> float:
-        """Compute reward based on terminal conditions.
+        """Compute reward using configurable reward strategy"""
+        ctx = RewardContext(
+            marine=self.units[1][0] if self.units[1] else None,
+            zerglings=self.units[2],
+            damage_dealt=self.damage.dealt_step,
+            damage_taken=self.damage.taken_step,
+            current_step=self.current_step,
+            max_steps=MAX_EPISODE_STEPS,
+            game_steps_per_env=self.game_steps_per_env,
+        )
 
-        Only gives reward at episode end:
-        - Win: 1 - (enemy_health_left / enemy_max_health)
-        - Timeout: small penalty
-        """
-        if self.current_step >= MAX_EPISODE_STEPS:
-            return -0.01 * self.current_step * self.game_steps_per_env
-
-        if not self.units[2]:
-            return 2  # Win: all zerglings dead
-
-        if not self.units[1] or not self.units[2]:
-            # Terminal state
-            enemy_max_health = ZERGLING_MAX_HP * 2
-            enemy_health_left = sum([u.health for u in self.units[2]], 0.0)
-            return 1 - (enemy_health_left / enemy_max_health)
-
-        return 0
+        reward = self.reward_strategy.compute(ctx)
+        logger.debug(f"Damage step: dealt={self.damage.dealt_step}, taken={self.damage.taken_step}, reward={reward}")
+        return reward
 
     def _agent_action(self, action: int) -> None:
         """Execute discrete action."""
@@ -343,6 +374,10 @@ class SC2GymEnv(gym.Env):
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         self.current_step = 0
         self.terminated = False
+        # Reset damage tracking
+        self.damage.reset()
+        # Reset reward strategy state (e.g., momentum history)
+        self.reward_strategy.reset()
         self.clean_battlefield()
         self.prepare_battlefield()
         return self._compute_observation(), {}

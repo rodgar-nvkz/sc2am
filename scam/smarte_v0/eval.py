@@ -72,7 +72,7 @@ def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level
             episode_length += 1
             episode_reward += reward
 
-        wins += episode_reward > 0
+        wins += info["won"]
         total_rewards.append(episode_reward)
         total_lengths.append(episode_length)
         print(f"Game {game + 1}: reward={episode_reward:.2f}, length={episode_length}, won={episode_reward > 0}")
