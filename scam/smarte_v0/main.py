@@ -1,17 +1,18 @@
 """
-IMPALA-style training for SC2 Marine vs Zerglings environment.
-
-Data architecture: 1 game = 1 episode = 1 training unit
-- Workers collect complete episodes
-- Learner batches N episodes, computes loss on all steps at once
-- Single forward pass, single backward pass
+IMPALA-style training with LSTM for SC2 Marine vs Zerglings.
 
 Architecture:
-    Worker 1: [SC2 + Policy] -> episode -> Queue ->
-    Worker 2: [SC2 + Policy] -> episode -> Queue ->  Main: V-trace -> Train -> Broadcast weights
-    Worker N: [SC2 + Policy] -> episode -> Queue ->
-                                              ^
-                                    Shared memory weights
+    obs → VectorEncoder → LSTM → [ActorHead, CriticHead]
+
+Key changes from previous version:
+- LSTM for sequential memory
+- Single discrete action space (40 actions)
+- Process episodes sequentially through LSTM during training
+
+Data flow:
+    Worker 1: [SC2 + Policy + LSTM] -> episode -> Queue ->
+    Worker 2: [SC2 + Policy + LSTM] -> episode -> Queue ->  Main: V-trace -> Train -> Broadcast
+    Worker N: [SC2 + Policy + LSTM] -> episode -> Queue ->
 """
 
 import argparse
@@ -28,14 +29,14 @@ from loguru import logger
 
 from .collector import EpisodeBatch, collector_worker
 from .config import IMPALAConfig
-from .env import ACTION_MOVE, NUM_COMMANDS, OBS_SIZE
+from .env import NUM_ACTIONS, OBS_SIZE
 from .eval import eval_model
 from .interop import SharedWeights
 from .model import ActorCritic
 
 
 def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | None = None):
-    """Main training loop."""
+    """Main training loop with LSTM support."""
     mp.set_start_method("spawn")
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -44,7 +45,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
 
     config = IMPALAConfig(total_episodes=total_episodes, num_workers=num_workers, upgrade_levels=[1])
     config.model.obs_size = OBS_SIZE
-    config.model.num_commands = NUM_COMMANDS
+    config.model.num_actions = NUM_ACTIONS
 
     model = ActorCritic(config.model).to(device)
 
@@ -52,6 +53,14 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
         print(f"Resuming from checkpoint: {resume}")
         checkpoint = torch.load(resume, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
+
+    # Print model info
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Model parameters: {total_params:,}")
+    print(f"Action space: {config.model.num_actions} discrete actions")
+    print("  - Move directions: 0-35 (36 x 10°)")
+    print("  - Attack Z1: 36, Attack Z2: 37")
+    print("  - Stop: 38, Skip: 39")
 
     episode_queue: Queue = Queue(maxsize=num_workers * 2)
     shared_weights = SharedWeights(model)
@@ -70,7 +79,9 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
     # Optimizer and LR scheduler
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, eps=1e-4)
     total_updates = total_episodes // config.episodes_per_batch
-    lr_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, config.lr_start_factor, config.lr_end_factor, total_updates)
+    lr_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, config.lr_start_factor, config.lr_end_factor, total_updates
+    )
 
     # Tracking
     update_count = 0
@@ -79,7 +90,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
     episode_lengths = deque(maxlen=100)
     start_time = time.time()
 
-    print(f"\nStarting IMPALA training for {total_episodes:,} episodes...")
+    print(f"\nStarting LSTM IMPALA training for {total_episodes:,} episodes...")
     print(f"Episodes per batch: {config.episodes_per_batch}, Workers: {num_workers}")
 
     try:
@@ -105,49 +116,74 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
             episode_lengths.extend(batch.episode_lengths)
             collected_episodes += batch.num_episodes
 
-            # Convert to tensors
-            tensors = batch.to_tensors(device)
-
-            # Normalize advantages
-            advantages = tensors["advantages"]
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-            # Precompute move mask for angle loss
-            move_mask = (tensors["commands"] == ACTION_MOVE).float()
-
             # === Training loop: multiple epochs over the batch ===
             model.train()
             total_loss = 0.0
             total_entropy = 0.0
-            total_metrics: dict[str, float] = {}
+            total_policy_loss = 0.0
+            total_value_loss = 0.0
 
             for _ in range(config.num_epochs):
-                # Forward pass through model
-                output = model(
-                    obs=tensors["observations"],
-                    command=tensors["commands"],
-                    angle=tensors["angles"],
-                    action_mask=tensors["action_masks"],
-                )
+                # Process each episode through LSTM and accumulate gradients
+                all_log_probs = []
+                all_entropies = []
+                all_values = []
+                all_old_log_probs = []
+                all_advantages = []
+                all_vtrace_targets = []
 
-                # Compute losses using encapsulated head methods
-                losses = model.compute_losses(
-                    output=output,
-                    old_cmd_log_prob=tensors["behavior_cmd_log_probs"],
-                    old_angle_log_prob=tensors["behavior_angle_log_probs"],
-                    advantages=advantages,
-                    vtrace_targets=tensors["vtrace_targets"],
-                    move_mask=move_mask,
-                    clip_epsilon=config.clip_epsilon,
-                )
+                for ep_idx, episode in enumerate(batch.episodes):
+                    # Convert episode data to tensors
+                    obs_seq = torch.from_numpy(episode.observations).unsqueeze(0).to(device)  # (1, T, obs_size)
+                    actions = torch.from_numpy(episode.actions).unsqueeze(0).to(device)  # (1, T)
 
-                # Combine losses
-                cmd_loss = losses["command"].loss
-                angle_loss = losses["angle"].loss
-                value_loss = losses["value"].loss
-                entropy = output.total_entropy.mean()
+                    # Forward pass through LSTM for entire episode
+                    output = model.forward_sequence(
+                        obs_seq=obs_seq,
+                        hidden=None,  # Start with zeros for each episode
+                        actions=actions,
+                    )
 
-                policy_loss = cmd_loss + angle_loss
+                    # Collect outputs (squeeze batch dimension)
+                    all_log_probs.append(output.action.log_prob.squeeze(0))  # (T,)
+                    all_entropies.append(output.action.entropy.squeeze(0))  # (T,)
+                    all_values.append(output.value.squeeze(0))  # (T,)
+
+                    # Get pre-computed targets
+                    all_old_log_probs.append(
+                        torch.from_numpy(episode.behavior_log_probs).to(device)
+                    )
+                    all_advantages.append(
+                        torch.from_numpy(batch.advantages[ep_idx]).to(device)
+                    )
+                    all_vtrace_targets.append(
+                        torch.from_numpy(batch.vtrace_targets[ep_idx]).to(device)
+                    )
+
+                # Concatenate all episodes
+                log_probs = torch.cat(all_log_probs)
+                entropies = torch.cat(all_entropies)
+                values = torch.cat(all_values)
+                old_log_probs = torch.cat(all_old_log_probs)
+                advantages = torch.cat(all_advantages)
+                vtrace_targets = torch.cat(all_vtrace_targets)
+
+                # Normalize advantages
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+                # Compute policy loss (PPO-style clipping)
+                ratio = torch.exp(log_probs - old_log_probs)
+                surr1 = ratio * advantages
+                surr2 = torch.clamp(ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon) * advantages
+                policy_loss = -torch.min(surr1, surr2).mean()
+
+                # Compute value loss
+                value_loss = torch.nn.functional.smooth_l1_loss(values, vtrace_targets)
+
+                # Entropy bonus
+                entropy = entropies.mean()
+
+                # Total loss
                 loss = policy_loss + config.value_coef * value_loss - config.entropy_coef * entropy
 
                 # Backward pass
@@ -158,12 +194,8 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
 
                 total_loss += loss.item()
                 total_entropy += entropy.item()
-
-                # Accumulate metrics
-                for name, head_loss in losses.items():
-                    for metric_name, metric_value in head_loss.metrics.items():
-                        key = f"{name}_{metric_name}"
-                        total_metrics[key] = total_metrics.get(key, 0.0) + metric_value
+                total_policy_loss += policy_loss.item()
+                total_value_loss += value_loss.item()
 
             update_count += 1
             lr_scheduler.step()
@@ -172,6 +204,8 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
             # Average over epochs for logging
             avg_loss = total_loss / config.num_epochs
             avg_entropy = total_entropy / config.num_epochs
+            avg_policy_loss = total_policy_loss / config.num_epochs
+            avg_value_loss = total_value_loss / config.num_epochs
 
             # Logging
             elapsed = time.time() - start_time
@@ -190,7 +224,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
                 f"Rew: {avg_return:>5.2f} | "
                 f"Len: {avg_length:>5.0f} | "
                 f"Win: {win_rate:>5.1f}% | "
-                f"Loss: {avg_loss:>6.3f} | "
+                f"Loss: {avg_loss:>6.3f} (π:{avg_policy_loss:.3f} v:{avg_value_loss:.3f}) | "
                 f"Ent: {avg_entropy:>5.2f} | "
                 f"Stale: {avg_staleness:>4.1f} | "
                 f"LR: {optimizer.param_groups[0]['lr']:.2e}"
@@ -229,7 +263,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
         "config": dataclasses.asdict(config),
     }
 
-    model_path = model_dir / f"impala_v2_{timestamp}.pt"
+    model_path = model_dir / f"lstm_v0_{timestamp}.pt"
     torch.save(checkpoint, model_path)
     print(f"Model saved to {model_path}")
 
@@ -242,7 +276,9 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
 
 
 def main():
-    parser = argparse.ArgumentParser(description="IMPALA training with hybrid action space for Marine vs Zerglings")
+    parser = argparse.ArgumentParser(
+        description="LSTM IMPALA training for Marine vs Zerglings (40 discrete actions)"
+    )
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # Train command

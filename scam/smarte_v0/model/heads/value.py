@@ -12,7 +12,7 @@ class CriticHead(ValueHead):
     """Value head for estimating state value V(s).
 
     Used by the critic to estimate expected returns from a state.
-    Receives both encoded features and raw observations (skip connection).
+    Receives LSTM output features and raw observations (skip connection).
     """
 
     def __init__(self, config: ModelConfig):
@@ -35,28 +35,29 @@ class CriticHead(ValueHead):
         for module in self.net:
             if isinstance(module, nn.Linear):
                 nn.init.orthogonal_(module.weight, gain=self.config.init_gain)
-                nn.init.constant_(module.bias, 0.0)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.0)
 
         # Value head uses gain=1.0 for output layer
-        nn.init.orthogonal_(self.net[-1].weight, gain=self.config.value_init_gain)
+        last_layer = self.net[-1]
+        if isinstance(last_layer, nn.Linear):
+            nn.init.orthogonal_(last_layer.weight, gain=self.config.value_init_gain)
 
     def forward(self, features: Tensor, raw_obs: Tensor) -> Tensor:
         """Forward pass: estimate state value.
 
         Args:
-            features: Encoded features from encoder (B, embed_size)
+            features: LSTM output features (B, lstm_hidden_size)
             raw_obs: Raw observation for skip connection (B, obs_size)
 
         Returns:
             Value estimates (B,)
         """
-        # Build input based on config
-        if self.config.use_embedding and self.config.use_skip_connections:
+        # Build input with optional skip connection
+        if self.config.use_skip_connections:
             x = torch.cat([features, raw_obs], dim=-1)
-        elif self.config.use_embedding:
-            x = features
         else:
-            x = raw_obs
+            x = features
 
         return self.net(x).squeeze(-1)
 

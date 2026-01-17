@@ -1,6 +1,5 @@
 """Vector encoder for scalar observations (health, distances, angles, etc.)."""
 
-import torch
 from torch import Tensor, nn
 
 from ..config import ModelConfig

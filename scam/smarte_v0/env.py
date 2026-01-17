@@ -2,12 +2,12 @@
 Marine vs 2 Zerglings RL Environment
 
 A Gymnasium environment for training a Marine agent against 2 scripted Zerglings.
-Uses vector observations and hybrid action space:
-- Discrete commands: STAY, MOVE, ATTACK_Z1, ATTACK_Z2
-- Continuous angle (sin, cos) for MOVE command in world-space polar coords
-
-The observation and action spaces use a relative reference frame based on the
-direction to the closest enemy, enabling rotation-invariant learning.
+Uses vector observations and discrete action space with 40 actions:
+    - 0-35: MOVE in direction (angle = i * 10°)
+    - 36: ATTACK_Z1
+    - 37: ATTACK_Z2
+    - 38: STOP
+    - 39: SKIP (no-op, continue previous action)
 """
 
 import math
@@ -41,11 +41,13 @@ ZERGLING_MAX_HP = 35.0
 ZERGLING_RANGE = 0.1  # Melee
 ZERGLING_SPEED = 4.13
 
-# Discrete commands
-ACTION_MOVE = 0
-ACTION_ATTACK_Z1 = 1
-ACTION_ATTACK_Z2 = 2
-NUM_COMMANDS = 3
+# Action space constants
+NUM_MOVE_DIRECTIONS = 36  # 360° / 10° = 36 directions
+ACTION_ATTACK_Z1 = 36
+ACTION_ATTACK_Z2 = 37
+ACTION_STOP = 38
+ACTION_SKIP = 39
+NUM_ACTIONS = 40
 
 # Movement step size (how far to move per action)
 MOVE_STEP_SIZE = 2.0
@@ -68,6 +70,31 @@ NUM_ZERGLINGS = 2
 # Per zergling (x2): distance (1), health (1), angle_sin (1), angle_cos (1) = 4
 # Total: 1 + 3 + 4*2 = 12
 OBS_SIZE = 12
+
+
+def action_to_angle(action: int) -> float:
+    """Convert move action index to angle in radians.
+
+    Args:
+        action: Action index (0-35 for move directions)
+
+    Returns:
+        Angle in radians (0 = east/right, counter-clockwise)
+    """
+    if 0 <= action < NUM_MOVE_DIRECTIONS:
+        return action * (2 * math.pi / NUM_MOVE_DIRECTIONS)
+    raise ValueError(f"Action {action} is not a move action")
+
+
+def is_move_action(action: int) -> bool:
+    """Check if action is a move action."""
+    return 0 <= action < NUM_MOVE_DIRECTIONS
+
+
+def is_attack_action(action: int) -> bool:
+    """Check if action is an attack action."""
+    return action in (ACTION_ATTACK_Z1, ACTION_ATTACK_Z2)
+
 
 @dataclass
 class UnitState:
@@ -105,27 +132,24 @@ class UnitState:
 
 
 class SC2GymEnv(gym.Env):
-    """1 Marine vs 2 Zerglings environment with hybrid action space.
+    """1 Marine vs 2 Zerglings environment with discrete action space.
 
-    Action space is a Dict with:
-    - 'command': Discrete(4) - STAY, MOVE, ATTACK_Z1, ATTACK_Z2
-    - 'angle': Box(2) - (sin, cos) of movement direction relative to reference
-
-    The reference direction is the direction to the closest zergling (or world north if none).
-    This makes the action space rotation-invariant.
+    Action space: Discrete(40)
+        - 0-35: MOVE in direction (angle = i * 10°)
+        - 36: ATTACK_Z1
+        - 37: ATTACK_Z2
+        - 38: STOP (halt unit)
+        - 39: SKIP (no-op, continue previous action)
     """
 
-    metadata = {"name": "sc2_mv2z_v2_hybrid", "render_modes": []}
+    metadata = {"name": "sc2_mv2z_v3_discrete", "render_modes": []}
 
     def __init__(self, params=None) -> None:
         super().__init__()
         self.params = params or {}
 
-        # Hybrid action space: discrete command + continuous angle
-        self.action_space = spaces.Dict({
-            'command': spaces.Discrete(NUM_COMMANDS),
-            'angle': spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),  # sin, cos
-        })
+        # Discrete action space with 40 actions
+        self.action_space = spaces.Discrete(NUM_ACTIONS)
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(OBS_SIZE,), dtype=np.float32)
 
         self.game = SC2SingleGame([Terran, Zerg]).launch()
@@ -183,11 +207,8 @@ class SC2GymEnv(gym.Env):
         spawn_angle = random.uniform(0, 2 * math.pi)
         ling_x = marine_x + spawn_distance * math.cos(spawn_angle)
         ling_y = marine_y + spawn_distance * math.sin(spawn_angle)
-        # Spawn 2 zergling nearby
+        # Spawn 2 zerglings nearby
         self.client.spawn_units(UNIT_ZERGLING, (ling_x, ling_y), owner=2, quantity=2)
-        # shift_x = random.randint(-2500, 2500) / 1000.0
-        # shift_y = random.randint(-2500, 2500) / 1000.0
-        # self.client.spawn_units(UNIT_ZERGLING, (ling_x + shift_x, ling_y + shift_y), owner=2, quantity=1)
 
         self.game.step(count=2)  # unit spawn takes two frames
 
@@ -195,22 +216,17 @@ class SC2GymEnv(gym.Env):
         assert len(self.units[1]) == 1, "Marine not spawned correctly"
         assert len(self.units[2]) == 2, f"Expected 2 Zerglings, got {len(self.units[2])}"
 
-        # Set marine gandicap
+        # Set marine handicap
         marine = self.units[1][0]
         if self.hp_multiplier != 1.0:
             self.client.set_unit_life(marine.tag, marine.health_max * self.hp_multiplier)
-
-        # Command zerglings to attack marine
-        # for zergling in self.units[2]:
-        #     self.client.unit_attack_unit(zergling.tag, marine.tag)
 
         logger.debug(f"Spawned Marine and 2 Zerglings (HP multiplier: {self.hp_multiplier})")
 
     def _get_zergling_obs(self, marine: UnitState, zergling: UnitState | None) -> list[float]:
         """Get observation features for a single zergling relative to marine.
 
-        Returns [health, sin(relative_angle), cos(relative_angle), distance]
-        All angles are relative to the reference direction.
+        Returns [health, sin(angle), cos(angle), distance]
         """
         if zergling is None:
             return [0.0, 0.0, 0.0, 0.0]
@@ -262,61 +278,73 @@ class SC2GymEnv(gym.Env):
         return np.array(obs, dtype=np.float32)
 
     def _compute_reward(self) -> float:
-        """Compute reward based on damage dealt/taken and terminal conditions"""
+        """Compute reward based on terminal conditions.
 
+        Only gives reward at episode end:
+        - Win: 1 - (enemy_health_left / enemy_max_health)
+        - Timeout: small penalty
+        """
         if self.current_step >= MAX_EPISODE_STEPS:
-            return -0.01 * self.current_step * self.game_steps_per_env
+            return -1
 
         if not self.units[1] or not self.units[2]:
-            # ally_health = sum([u.health / u.health_max for u in self.units[1]], 0.0) / 1.0
+            # Terminal state
             enemy_max_health = ZERGLING_MAX_HP * 2
             enemy_health_left = sum([u.health for u in self.units[2]], 0.0)
-            return 1 - (enemy_health_left / enemy_max_health)
+            return -(enemy_health_left / enemy_max_health)
 
         return 0
 
-    def _agent_action(self, action: dict) -> None:
-        """Execute hybrid action: discrete command + continuous angle."""
-        command = action['command']
-        angle_sincos = action['angle']
+    def _agent_action(self, action: int) -> None:
+        """Execute discrete action.
 
-        logger.debug(f"Agent action: command={command}, angle_sincos={angle_sincos}")
+        Actions:
+            0-35: MOVE in direction (angle = action * 10°)
+            36: ATTACK_Z1
+            37: ATTACK_Z2
+            38: STOP
+            39: SKIP (no-op)
+        """
+        logger.debug(f"Agent action: {action}")
 
         marine = self.units[1][0]
         zerglings = self.units[2]
 
-        if command == ACTION_MOVE:
-            dy, dx = angle_sincos
-            target_x = marine.x + dx * MOVE_STEP_SIZE
-            target_y = marine.y + dy * MOVE_STEP_SIZE
+        if is_move_action(action):
+            # Move in specified direction
+            angle = action_to_angle(action)
+            dx = math.cos(angle) * MOVE_STEP_SIZE
+            dy = math.sin(angle) * MOVE_STEP_SIZE
+            target_x = marine.x + dx
+            target_y = marine.y + dy
             self.client.unit_move(marine.tag, (target_x, target_y))
-        elif command == ACTION_ATTACK_Z1:
+
+        elif action == ACTION_ATTACK_Z1:
             if len(zerglings) > 0:
                 self.client.unit_attack_unit(marine.tag, zerglings[0].tag)
-        elif command == ACTION_ATTACK_Z2:
+
+        elif action == ACTION_ATTACK_Z2:
             if len(zerglings) > 1:
                 self.client.unit_attack_unit(marine.tag, zerglings[1].tag)
-        else:
-            raise ValueError(f"Invalid command: {command}")
 
-    def get_action_mask(self) -> np.ndarray:
-        """ACTIONS=[MOVE, ATTACK_Z1, ATTACK_Z2]"""
-        mask = np.ones(NUM_COMMANDS, dtype=bool)
-        marine = self.units[1][0] if self.units[1] else None
-        zerglings = self.units[2]
-        # alive and in attack range
-        mask[ACTION_ATTACK_Z1] = len(zerglings) > 0 and marine and zerglings[0].distance_to(marine) < 6
-        mask[ACTION_ATTACK_Z2] = len(zerglings) > 1 and marine and zerglings[1].distance_to(marine) < 6
-        return mask
+        elif action == ACTION_STOP:
+            self.client.unit_stop(marine.tag)
+
+        elif action == ACTION_SKIP:
+            # Do nothing - continue previous action
+            pass
+
+        else:
+            raise ValueError(f"Invalid action: {action}")
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         self.current_step = 0
         self.terminated = False
         self.clean_battlefield()
         self.prepare_battlefield()
-        return self._compute_observation(), {"action_mask": self.get_action_mask()}
+        return self._compute_observation(), {}
 
-    def step(self, action: dict) -> tuple:
+    def step(self, action: int) -> tuple:
         logger.debug(f"Environment step {self.current_step} with action {action}")
 
         if not self.terminated:
@@ -328,7 +356,7 @@ class SC2GymEnv(gym.Env):
         obs = self._compute_observation()
         reward = self._compute_reward()
         truncated = self.current_step >= MAX_EPISODE_STEPS
-        return obs, reward, self.terminated, truncated, {"won": reward > 0, "action_mask": self.get_action_mask()}
+        return obs, reward, self.terminated, truncated, {"won": reward > 0}
 
     def close(self) -> None:
         self.game.close()

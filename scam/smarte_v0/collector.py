@@ -1,8 +1,8 @@
 """
-Simplified IMPALA collector: 1 game = 1 episode.
+Simplified IMPALA collector with LSTM support.
 
 Each worker collects complete episodes and sends them to the learner.
-No padding, no fixed rollout length, no mid-episode resets.
+The LSTM hidden state is tracked during collection and reset at episode boundaries.
 """
 
 import signal
@@ -25,13 +25,10 @@ class Episode:
 
     worker_id: int
     observations: np.ndarray  # (T, obs_size)
-    commands: np.ndarray  # (T,)
-    angles: np.ndarray  # (T, 2)
+    actions: np.ndarray  # (T,) - discrete actions
     rewards: np.ndarray  # (T,)
-    behavior_cmd_log_probs: np.ndarray  # (T,)
-    behavior_angle_log_probs: np.ndarray  # (T,)
+    behavior_log_probs: np.ndarray  # (T,)
     behavior_values: np.ndarray  # (T,)
-    action_masks: np.ndarray  # (T, num_commands)
     weight_version: int
 
     @property
@@ -45,26 +42,25 @@ class Episode:
 
 @dataclass
 class EpisodeBatch:
-    """Batch of complete episodes, concatenated for training."""
+    """Batch of complete episodes for training.
 
-    observations: np.ndarray  # (N_total, obs_size)
-    commands: np.ndarray  # (N_total,)
-    angles: np.ndarray  # (N_total, 2)
-    rewards: np.ndarray  # (N_total,)
-    behavior_cmd_log_probs: np.ndarray  # (N_total,)
-    behavior_angle_log_probs: np.ndarray  # (N_total,)
-    behavior_values: np.ndarray  # (N_total,)
-    action_masks: np.ndarray  # (N_total, num_commands)
+    For LSTM training, we keep episodes separate and process them
+    sequentially through the network.
+    """
 
-    # Per-episode V-trace results (computed separately, then concatenated)
-    vtrace_targets: np.ndarray  # (N_total,)
-    advantages: np.ndarray  # (N_total,)
+    # List of episodes (not concatenated - needed for LSTM)
+    episodes: list[Episode]
+
+    # Pre-computed V-trace targets and advantages per episode
+    vtrace_targets: list[np.ndarray]  # List of (T,) arrays
+    advantages: list[np.ndarray]  # List of (T,) arrays
 
     # Metadata
     episode_lengths: list[int]
     episode_returns: list[float]
     weight_versions: list[int]
     num_episodes: int
+    total_steps: int
 
     @classmethod
     def from_episodes(cls, episodes: list[Episode], config: IMPALAConfig) -> "EpisodeBatch":
@@ -76,85 +72,109 @@ class EpisodeBatch:
         weight_versions = [ep.weight_version for ep in episodes]
         total_steps = sum(episode_lengths)
 
-        # Pre-allocate concatenated arrays
-        observations = np.empty((total_steps, config.model.obs_size), dtype=np.float32)
-        commands = np.empty(total_steps, dtype=np.int64)
-        angles = np.empty((total_steps, 2), dtype=np.float32)
-        rewards = np.empty(total_steps, dtype=np.float32)
-        behavior_cmd_log_probs = np.empty(total_steps, dtype=np.float32)
-        behavior_angle_log_probs = np.empty(total_steps, dtype=np.float32)
-        behavior_values = np.empty(total_steps, dtype=np.float32)
-        action_masks = np.empty((total_steps, config.model.num_commands), dtype=bool)
-        vtrace_targets = np.empty(total_steps, dtype=np.float32)
-        advantages = np.empty(total_steps, dtype=np.float32)
+        # Compute V-trace for each episode
+        vtrace_targets = []
+        advantages = []
 
-        # Fill arrays and compute V-trace per episode
-        offset = 0
         for ep in episodes:
-            T = ep.length
-            end = offset + T
-
-            # Copy episode data
-            observations[offset:end] = ep.observations
-            commands[offset:end] = ep.commands
-            angles[offset:end] = ep.angles
-            rewards[offset:end] = ep.rewards
-            behavior_cmd_log_probs[offset:end] = ep.behavior_cmd_log_probs
-            behavior_angle_log_probs[offset:end] = ep.behavior_angle_log_probs
-            behavior_values[offset:end] = ep.behavior_values
-            action_masks[offset:end] = ep.action_masks
-
-            # Compute V-trace for this episode (terminal state, bootstrap = 0)
-            ep_vtrace, ep_adv = compute_vtrace_episode(rewards=ep.rewards, values=ep.behavior_values, gamma=config.gamma)
-            vtrace_targets[offset:end] = ep_vtrace
-            advantages[offset:end] = ep_adv
-
-            offset = end
+            ep_vtrace, ep_adv = compute_vtrace_episode(
+                rewards=ep.rewards,
+                values=ep.behavior_values,
+                gamma=config.gamma
+            )
+            vtrace_targets.append(ep_vtrace)
+            advantages.append(ep_adv)
 
         return cls(
-            observations=observations,
-            commands=commands,
-            angles=angles,
-            rewards=rewards,
-            behavior_cmd_log_probs=behavior_cmd_log_probs,
-            behavior_angle_log_probs=behavior_angle_log_probs,
-            behavior_values=behavior_values,
-            action_masks=action_masks,
+            episodes=episodes,
             vtrace_targets=vtrace_targets,
             advantages=advantages,
             episode_lengths=episode_lengths,
             episode_returns=episode_returns,
             weight_versions=weight_versions,
             num_episodes=len(episodes),
+            total_steps=total_steps,
         )
 
-    def to_tensors(self, device: torch.device) -> dict[str, torch.Tensor]:
-        """Convert to tensors for training."""
+    def to_tensors(self, device: torch.device) -> dict[str, list[torch.Tensor]]:
+        """Convert to tensors for training.
+
+        Returns lists of tensors (one per episode) for LSTM processing.
+        """
         return {
-            "observations": torch.from_numpy(self.observations).to(device),
-            "commands": torch.from_numpy(self.commands).to(device),
-            "angles": torch.from_numpy(self.angles).to(device),
-            "rewards": torch.from_numpy(self.rewards).to(device),
-            "behavior_cmd_log_probs": torch.from_numpy(self.behavior_cmd_log_probs).to(device),
-            "behavior_angle_log_probs": torch.from_numpy(self.behavior_angle_log_probs).to(device),
-            "behavior_values": torch.from_numpy(self.behavior_values).to(device),
-            "action_masks": torch.from_numpy(self.action_masks).to(device),
-            "vtrace_targets": torch.from_numpy(self.vtrace_targets).to(device),
-            "advantages": torch.from_numpy(self.advantages).to(device),
+            "observations": [
+                torch.from_numpy(ep.observations).to(device)
+                for ep in self.episodes
+            ],
+            "actions": [
+                torch.from_numpy(ep.actions).to(device)
+                for ep in self.episodes
+            ],
+            "rewards": [
+                torch.from_numpy(ep.rewards).to(device)
+                for ep in self.episodes
+            ],
+            "behavior_log_probs": [
+                torch.from_numpy(ep.behavior_log_probs).to(device)
+                for ep in self.episodes
+            ],
+            "behavior_values": [
+                torch.from_numpy(ep.behavior_values).to(device)
+                for ep in self.episodes
+            ],
+            "vtrace_targets": [
+                torch.from_numpy(vt).to(device)
+                for vt in self.vtrace_targets
+            ],
+            "advantages": [
+                torch.from_numpy(adv).to(device)
+                for adv in self.advantages
+            ],
+        }
+
+    def to_flat_tensors(self, device: torch.device) -> dict[str, torch.Tensor]:
+        """Convert to flat tensors (concatenated across episodes).
+
+        This is used after forward_sequence to compute losses on all steps.
+        """
+        return {
+            "observations": torch.from_numpy(
+                np.concatenate([ep.observations for ep in self.episodes], axis=0)
+            ).to(device),
+            "actions": torch.from_numpy(
+                np.concatenate([ep.actions for ep in self.episodes], axis=0)
+            ).to(device),
+            "rewards": torch.from_numpy(
+                np.concatenate([ep.rewards for ep in self.episodes], axis=0)
+            ).to(device),
+            "behavior_log_probs": torch.from_numpy(
+                np.concatenate([ep.behavior_log_probs for ep in self.episodes], axis=0)
+            ).to(device),
+            "behavior_values": torch.from_numpy(
+                np.concatenate([ep.behavior_values for ep in self.episodes], axis=0)
+            ).to(device),
+            "vtrace_targets": torch.from_numpy(
+                np.concatenate(self.vtrace_targets, axis=0)
+            ).to(device),
+            "advantages": torch.from_numpy(
+                np.concatenate(self.advantages, axis=0)
+            ).to(device),
         }
 
 
-def compute_vtrace_episode(rewards: np.ndarray, values: np.ndarray, gamma: float = 0.99) -> tuple[np.ndarray, np.ndarray]:
+def compute_vtrace_episode(
+    rewards: np.ndarray,
+    values: np.ndarray,
+    gamma: float = 0.99
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Compute V-trace targets and advantages for a single complete episode.
 
     Since episode is complete (terminal state), bootstrap value = 0.
-    Simplified version without importance sampling (on-policy assumption). Avg staleness < 3.
+    Simplified version without importance sampling (on-policy assumption).
     """
     T = len(rewards)
 
-    # TD targets: standard TD(0) since episode is complete
-    # V_target[t] = r[t] + gamma * V_target[t+1], with V_target[T] = 0
     vtrace_targets = np.zeros(T, dtype=np.float32)
     advantages = np.zeros(T, dtype=np.float32)
 
@@ -175,7 +195,7 @@ def collector_worker(
     shutdown_event: Any,
     config: IMPALAConfig,
 ):
-    """Worker process that collects complete episodes."""
+    """Worker process that collects complete episodes with LSTM."""
 
     # Ignore SIGINT in workers (let main handle it)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -216,63 +236,63 @@ def collector_worker(
     except Exception as e:
         logger.error(f"Worker {worker_id} crashed: {e}")
         import traceback
-
         traceback.print_exc()
 
 
-def collect_episode(env, model: ActorCritic, worker_id: int, weight_version: int, max_steps: int = 1024) -> Episode:
-    """Collect a single complete episode."""
+def collect_episode(
+    env,
+    model: ActorCritic,
+    worker_id: int,
+    weight_version: int,
+    max_steps: int = 1024
+) -> Episode:
+    """Collect a single complete episode with LSTM hidden state tracking."""
 
     # Use lists for variable-length episode
     observations = []
-    commands = []
-    angles = []
+    actions = []
     rewards = []
-    cmd_log_probs = []
-    angle_log_probs = []
+    log_probs = []
     values = []
-    action_masks = []
 
     obs, info = env.reset()
-    action_mask = info["action_mask"]
     done = False
     steps = 0
+
+    # Initialize LSTM hidden state
+    hidden = model.get_initial_hidden(batch_size=1)
 
     with torch.no_grad():
         while not done and steps < max_steps:
             observations.append(obs)
-            action_masks.append(action_mask)
 
-            # Get action from policy
+            # Get action from policy (with LSTM)
             obs_tensor = torch.from_numpy(obs).unsqueeze(0)
-            mask_tensor = torch.from_numpy(action_mask).unsqueeze(0)
-            output = model(obs_tensor, action_mask=mask_tensor)
+            output = model(obs_tensor, hidden=hidden)
 
-            commands.append(output.command.action.item())
-            angles.append(output.angle.action.squeeze(0).numpy())
-            cmd_log_probs.append(output.command.log_prob.item())
-            angle_log_probs.append(output.angle.log_prob.item())
+            # Update hidden state for next step
+            hidden = output.hidden
+
+            # Record action and statistics
+            action = output.action.action.item()
+            actions.append(action)
+            log_probs.append(output.action.log_prob.item())
             values.append(output.value.item())
 
             # Step environment
-            action = {"command": output.command.action.item(), "angle": output.angle.action.squeeze(0).numpy()}
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
             rewards.append(reward)
-            action_mask = info["action_mask"]
             steps += 1
 
     # Convert lists to arrays
     return Episode(
         worker_id=worker_id,
         observations=np.array(observations, dtype=np.float32),
-        commands=np.array(commands, dtype=np.int64),
-        angles=np.array(angles, dtype=np.float32),
+        actions=np.array(actions, dtype=np.int64),
         rewards=np.array(rewards, dtype=np.float32),
-        behavior_cmd_log_probs=np.array(cmd_log_probs, dtype=np.float32),
-        behavior_angle_log_probs=np.array(angle_log_probs, dtype=np.float32),
+        behavior_log_probs=np.array(log_probs, dtype=np.float32),
         behavior_values=np.array(values, dtype=np.float32),
-        action_masks=np.array(action_masks, dtype=bool),
         weight_version=weight_version,
     )
