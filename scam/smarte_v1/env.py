@@ -1,104 +1,89 @@
 """
 Marine vs 2 Zerglings RL Environment
 
-A Gymnasium environment for training a Marine agent against 2 scripted Zerglings.
-Uses vector observations and discrete action space:
-    - 0 to num_move_directions-1: MOVE in direction (angle = i * 360°/num_move_directions)
-    - num_move_directions: ATTACK_Z1
-    - num_move_directions+1: ATTACK_Z2
-    - num_move_directions+2: STOP
-    - num_move_directions+3: SKIP (no-op, continue previous action)
+Task: Chase zerglings, attack, kite to avoid damage. Win/lose signal only.
 
-Default: 4 move directions (E, N, W, S at 0°, 90°, 180°, 270°) + 4 other = 8 actions
+Hybrid Action Space:
+    command: Discrete(3) - MOVE, ATTACK_Z1, ATTACK_Z2
+    angle: Box(2) - [sin, cos] for movement direction (used only with MOVE)
+
+Observations (12-dim float32, normalized to [-1, 1]):
+    [0]     time_left       - Episode progress (1.0 -> 0.0)
+    [1]     marine_hp       - Marine health fraction
+    [2]     cd_binary       - Weapon on cooldown (0 or 1)
+    [3]     cd_norm         - Weapon cooldown normalized
+    [4:8]   z1_obs          - [hp, sin(angle), cos(angle), dist] for enemy 1
+    [8:12]  z2_obs          - [hp, sin(angle), cos(angle), dist] for enemy 2
+
+Enemy Tracking:
+    - EnemyTracker assigns fixed slots by tag on first observation
+    - Dead enemies return [0, 0, 0, 0] but keep their slot (no shifting)
+    - Tags preserved throughout episode for stable credit assignment
+
+Action Masks (returned in info["action_mask"]):
+    [MOVE, ATTACK_Z1, ATTACK_Z2] - bool array
+    - MOVE: always True
+    - ATTACK_Zx: True only if enemy alive AND in range (< MARINE_RANGE)
+
+Reward:
+    - Non-terminal steps: 0
+    - Terminal: 1 - (enemy_hp_remaining / enemy_max_hp)
+    - Timeout: 0
+
+Episode Termination:
+    - Marine dies (lose)
+    - All zerglings die (win)
+    - Timeout at MAX_EPISODE_STEPS
+
+Spawn Configuration (edit SPAWN_DISTANCE for experiments):
+    - < 8: In sight range, attack command leads to move-and-attack
+    - > 12: Out of sight, must move toward enemy first
+    - Default: 14 (out of sight)
 """
 
 import math
 import random
-import sys
 from dataclasses import dataclass
 from typing import Any
 
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
-from loguru import logger
-from sympy.polys.matrices.linsolve import defaultdict
 
 from scam.infra.game import SC2SingleGame, Terran, Zerg
-
-from .rewards import RewardContext, RewardStrategy, create_reward_strategy
-
-logger.remove()
-logger.add(sys.stderr, level="INFO")
-
 
 # Unit type IDs
 UNIT_MARINE = 48
 UNIT_ZERGLING = 105
 
-# Unit stats (for normalization)
+# Unit stats
 MARINE_MAX_HP = 45.0
 MARINE_RANGE = 5.0
-MARINE_SPEED = 3.15
-
 ZERGLING_MAX_HP = 35.0
-ZERGLING_RANGE = 0.1  # Melee
-ZERGLING_SPEED = 4.13
-
-# Default action space (4 move directions)
-# Can be overridden via params["num_move_directions"]
-DEFAULT_NUM_MOVE_DIRECTIONS = 4
-
-# Movement step size (how far to move per action)
-MOVE_STEP_SIZE = 2.0
-
-# Environment constants
-MAX_EPISODE_STEPS = int(22.4 * 30)  # 30 realtime seconds
-
-# Spawn configuration
-SPAWN_AREA_MIN = 0.0 + 15
-SPAWN_AREA_MAX = 32.0 - 15
-MIN_SPAWN_DISTANCE = 14
-MAX_SPAWN_DISTANCE = 14
-
-# Number of zerglings
 NUM_ZERGLINGS = 2
 
-# Observation space size:
-# Time: time_remaining (1) = 1
-# Marine: own_health (1), weapon_cooldown (1), weapon_cooldown_norm (1) = 3
-# Per zergling (x2): distance (1), health (1), angle_sin (1), angle_cos (1) = 4
-# Total: 1 + 3 + 4*2 = 12
+# Actions
+ACTION_MOVE = 0
+ACTION_ATTACK_Z1 = 1
+ACTION_ATTACK_Z2 = 2
+NUM_COMMANDS = 3
+
+# Movement
+MOVE_STEP_SIZE = 2.0
+
+# Episode limits
+MAX_EPISODE_STEPS = int(22.4 * 30)  # 30 seconds realtime
+GAME_STEPS_PER_ENV = 2
+
+# Spawn config (edit by hand for experiments)
+SPAWN_DISTANCE = 14.0
+
+# Observation: time(1) + marine(hp, cd, cd_norm)(3) + z1(hp, sin, cos, dist)(4) + z2(4) = 12
 OBS_SIZE = 12
 
 
 @dataclass
-class DamageTracker:
-    """Tracks cumulative and per-step damage dealt/taken from sc2clientprotocol score data."""
-    dealt_acc: float = 0.0
-    taken_acc: float = 0.0
-    dealt_step: float = 0.0
-    taken_step: float = 0.0
-
-    def update(self, score_details) -> None:
-        dealt = score_details.total_damage_dealt.life + score_details.total_damage_dealt.shields
-        taken = score_details.total_damage_taken.life + score_details.total_damage_taken.shields
-        self.dealt_step = dealt - self.dealt_acc
-        self.taken_step = taken - self.taken_acc
-        self.dealt_acc = dealt
-        self.taken_acc = taken
-
-    def reset(self) -> None:
-        self.dealt_acc = 0.0
-        self.taken_acc = 0.0
-        self.dealt_step = 0.0
-        self.taken_step = 0.0
-
-
-@dataclass
 class UnitState:
-    """Represents the state of a unit."""
-
     tag: int
     x: float
     y: float
@@ -121,298 +106,230 @@ class UnitState:
         return math.sqrt((self.x - other.x) ** 2 + (self.y - other.y) ** 2)
 
     def angle_to(self, other: "UnitState") -> float:
-        """Returns angle in radians from self to other."""
         return math.atan2(other.y - self.y, other.x - self.x)
 
-    def angle_to_sincos(self, other: "UnitState") -> tuple[float, float]:
-        """Returns (sin_angle, cos_angle) encoding to avoid discontinuity."""
-        angle_rad = math.atan2(other.y - self.y, other.x - self.x)
-        return math.sin(angle_rad), math.cos(angle_rad)
+
+class EnemyTracker:
+    """Tracks enemies in fixed slots by tag.
+
+    Once a tag is assigned to a slot, it stays there for the episode.
+    Dead enemies return None but keep their slot assignment.
+    """
+
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self._slots: list[UnitState | None] = [None] * capacity
+        self._tags: list[int | None] = [None] * capacity
+
+    def reset(self) -> None:
+        self._slots = [None] * self.capacity
+        self._tags = [None] * self.capacity
+
+    def update(self, units: list[UnitState]) -> None:
+        """Update slots from observation.
+
+        First call: assign tags to slots (sorted by tag for determinism).
+        Subsequent calls: update by tag match, dead enemies become None.
+        """
+        if all(t is None for t in self._tags):
+            # First observation - assign tags to slots
+            sorted_units = sorted(units, key=lambda u: u.tag)
+            for i, unit in enumerate(sorted_units[: self.capacity]):
+                self._tags[i] = unit.tag
+                self._slots[i] = unit
+        else:
+            # Update by tag match
+            tag_to_unit = {u.tag: u for u in units}
+            for i, tag in enumerate(self._tags):
+                if tag is not None and tag in tag_to_unit:
+                    self._slots[i] = tag_to_unit[tag]
+                else:
+                    self._slots[i] = None
+
+    def __getitem__(self, index: int) -> UnitState | None:
+        return self._slots[index]
+
+    def get_tag(self, index: int) -> int | None:
+        return self._tags[index]
+
+    def is_alive(self, index: int) -> bool:
+        return self._slots[index] is not None
+
+    def all_dead(self) -> bool:
+        return all(s is None for s in self._slots)
+
+    def total_health(self) -> float:
+        return sum(s.health for s in self._slots if s is not None)
 
 
 class SC2GymEnv(gym.Env):
-    """1 Marine vs 2 Zerglings environment with discrete action space.
+    """1 Marine vs 2 Zerglings with hybrid action space."""
 
-    Action space: Discrete(num_move_directions + 4)
-        - 0 to num_move_directions-1: MOVE in direction
-        - num_move_directions: ATTACK_Z1
-        - num_move_directions+1: ATTACK_Z2
-        - num_move_directions+2: STOP (halt unit)
-        - num_move_directions+3: SKIP (no-op, continue previous action)
+    metadata = {"name": "smarte_v1", "render_modes": []}
 
-    Default: 4 move directions (E=0, N=1, W=2, S=3) giving 8 total actions.
-    """
-
-    metadata = {"name": "sc2_mv2z_v3_discrete", "render_modes": []}
-
-    def __init__(self, params=None) -> None:
+    def __init__(self, params: dict | None = None) -> None:
         super().__init__()
         self.params = params or {}
 
-        # Configurable action space
-        self.num_move_directions = self.params.get("num_move_directions", DEFAULT_NUM_MOVE_DIRECTIONS)
-        self.num_actions = self.num_move_directions + 4
-
-        # Compute action indices
-        self.action_attack_z1 = self.num_move_directions
-        self.action_attack_z2 = self.num_move_directions + 1
-        self.action_stop = self.num_move_directions + 2
-        self.action_skip = self.num_move_directions + 3
-
-        # Discrete action space
-        self.action_space = spaces.Discrete(self.num_actions)
+        self.action_space = spaces.Dict({
+            "command": spaces.Discrete(NUM_COMMANDS),
+            "angle": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
+        })
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(OBS_SIZE,), dtype=np.float32)
 
         self.game = SC2SingleGame([Terran, Zerg]).launch()
         self.client = self.game.clients[0]
-        self.units: dict[int, list] = defaultdict(list)
-        self.current_step: int = 0
-        self.terminated: bool = False
-
-        # Damage tracking for per-step rewards
-        self.damage = DamageTracker()
-
-        # Reward strategy (configurable via params)
-        reward_strategy_name = self.params.get("reward_strategy", "simple")
-        reward_params = self.params.get("reward_params", {})
-        self.reward_strategy: RewardStrategy = create_reward_strategy(reward_strategy_name, **reward_params)
-
-        self.upgrade_level = random.choice(self.params.get("upgrade_level", [0, 1, 2]))
-        self.game_steps_per_env = 2
-        self.hp_multiplier = 1
-        self.init_game()
-
-    def _action_to_angle(self, action: int) -> float:
-        """Convert move action index to angle in radians.
-
-        Args:
-            action: Action index (0 to num_move_directions-1)
-
-        Returns:
-            Angle in radians (0 = east/right, counter-clockwise)
-        """
-        if 0 <= action < self.num_move_directions:
-            return action * (2 * math.pi / self.num_move_directions)
-        raise ValueError(f"Action {action} is not a move action")
-
-    def _is_move_action(self, action: int) -> bool:
-        """Check if action is a move action."""
-        return 0 <= action < self.num_move_directions
-
-    def _is_attack_action(self, action: int) -> bool:
-        """Check if action is an attack action."""
-        return action in (self.action_attack_z1, self.action_attack_z2)
-
-    def init_game(self) -> None:
-        logger.info(f"Initializing SC2GymEnv with params: {self.params}")
-        logger.info(f"Action space: {self.num_actions} actions ({self.num_move_directions} move + 4 other)")
         self.client.enable_enemy_control()
-        for _ in range(self.upgrade_level):
-            self.client.research_upgrades()
-            self.game.step(count=5)  # allow time for upgrade to complete
 
-    def observe_units(self) -> None:
-        self.units = defaultdict(list)
+        self.marine: UnitState | None = None
+        self.enemies = EnemyTracker(NUM_ZERGLINGS)
+        self.current_step = 0
+        self.terminated = False
+
+    def _observe_units(self) -> None:
         obs = self.client.get_observation()
+
+        marine_list = []
+        enemy_list = []
+
         for unit in obs.observation.raw_data.units:
-            if unit.unit_type not in (UNIT_MARINE, UNIT_ZERGLING) or unit.health <= 0:
+            if unit.health <= 0:
                 continue
-            unit_state = UnitState.from_proto(unit)
-            self.units[unit.owner].append(unit_state)
+            if unit.unit_type == UNIT_MARINE and unit.owner == 1:
+                marine_list.append(UnitState.from_proto(unit))
+            elif unit.unit_type == UNIT_ZERGLING and unit.owner == 2:
+                enemy_list.append(UnitState.from_proto(unit))
 
-        for units in self.units.values():
-            units.sort(key=lambda u: u.tag)
+        self.marine = marine_list[0] if marine_list else None
+        self.enemies.update(enemy_list)
+        self.terminated = self.marine is None or self.enemies.all_dead()
 
-        # Extract damage info from score
-        self.damage.update(obs.observation.score.score_details)
-
-        self.terminated = not all((self.units[1], self.units[2]))
-        logger.debug(
-            f"Marine alive: {len(self.units[1])}, Zerglings alive: {len(self.units[2])}, episode ended: {self.terminated}"
-        )
-
-    def clean_battlefield(self) -> None:
-        units = sum(self.units.values(), [])
-        unit_tags = [u.tag for u in units]
-        self.client.kill_units(unit_tags)
+    def _clean_battlefield(self) -> None:
+        tags = []
+        if self.marine:
+            tags.append(self.marine.tag)
+        for i in range(self.enemies.capacity):
+            tag = self.enemies.get_tag(i)
+            if tag is not None:
+                tags.append(tag)
+        if tags:
+            self.client.kill_units(tags)
         if self.game.reset_map():
-            self.init_game()
+            self.client.enable_enemy_control()
 
-    def prepare_battlefield(self) -> None:
-        logger.debug("Spawning units")
-
-        # Random position for marine
-        marine_x = random.uniform(SPAWN_AREA_MIN, SPAWN_AREA_MAX)
-        marine_y = random.uniform(SPAWN_AREA_MIN, SPAWN_AREA_MAX)
+    def _prepare_battlefield(self) -> None:
+        marine_x, marine_y = random.uniform(15, 17), random.uniform(15, 17)
         self.client.spawn_units(UNIT_MARINE, (marine_x, marine_y), owner=1, quantity=1)
 
-        # Spawn first zergling at random distance/angle from marine
-        spawn_distance = random.uniform(MIN_SPAWN_DISTANCE, MAX_SPAWN_DISTANCE)
-        spawn_angle = random.uniform(0, 2 * math.pi)
-        ling_x = marine_x + spawn_distance * math.cos(spawn_angle)
-        ling_y = marine_y + spawn_distance * math.sin(spawn_angle)
-        # Spawn 2 zerglings nearby
-        self.client.spawn_units(UNIT_ZERGLING, (ling_x, ling_y), owner=2, quantity=2)
+        angle = random.uniform(0, 2 * math.pi)
+        ling_x = marine_x + SPAWN_DISTANCE * math.cos(angle)
+        ling_y = marine_y + SPAWN_DISTANCE * math.sin(angle)
+        self.client.spawn_units(UNIT_ZERGLING, (ling_x, ling_y), owner=2, quantity=NUM_ZERGLINGS)
 
-        self.game.step(count=2)  # unit spawn takes two frames
+        self.game.step(count=2)
+        self._observe_units()
 
-        self.observe_units()
-        assert len(self.units[1]) == 1, "Marine not spawned correctly"
-        assert len(self.units[2]) == 2, f"Expected 2 Zerglings, got {len(self.units[2])}"
+        assert self.marine is not None, "Marine not spawned"
+        assert not self.enemies.all_dead(), "Zerglings not spawned"
 
-        # Set marine handicap
-        marine = self.units[1][0]
-        if self.hp_multiplier != 1.0:
-            self.client.set_unit_life(marine.tag, marine.health_max * self.hp_multiplier)
-
-        logger.debug(f"Spawned Marine and 2 Zerglings (HP multiplier: {self.hp_multiplier})")
-
-    def _get_zergling_obs(self, marine: UnitState, zergling: UnitState | None) -> list[float]:
-        """Get observation features for a single zergling relative to marine.
-
-        Returns [health, sin(angle), cos(angle), distance]
-        """
-        if zergling is None:
+    def _get_enemy_obs(self, enemy: UnitState | None) -> list[float]:
+        if enemy is None or self.marine is None:
             return [0.0, 0.0, 0.0, 0.0]
 
-        # Health (normalized)
-        enemy_health = zergling.health / zergling.health_max
-
-        angle = marine.angle_to(zergling)
-        angle_sin, angle_cos = math.sin(angle), math.cos(angle)
-
-        # Distance (normalized, max meaningful distance ~20)
-        distance = marine.distance_to(zergling)
-        distance_norm = min(1.0, distance / 30.0)
-
-        return [enemy_health, angle_sin, angle_cos, distance_norm]
+        hp = enemy.health / enemy.health_max
+        angle = self.marine.angle_to(enemy)
+        dist = min(1.0, self.marine.distance_to(enemy) / 30.0)
+        return [hp, math.sin(angle), math.cos(angle), dist]
 
     def _compute_observation(self) -> np.ndarray:
-        if not self.units[1]:
+        if self.marine is None:
             return np.zeros(OBS_SIZE, dtype=np.float32)
 
-        marine = self.units[1][0]
-        zerglings = self.units[2]
+        time_left = 1.0 - (self.current_step / MAX_EPISODE_STEPS)
+        hp = self.marine.health / self.marine.health_max
+        cd = float(self.marine.weapon_cooldown > 0)
+        cd_norm = min(1.0, self.marine.weapon_cooldown / 15.0)
 
-        # Marine's own state
-        own_health = marine.health / marine.health_max
-        weapon_cooldown = int(bool(marine.weapon_cooldown))
-        weapon_cooldown_norm = min(1.0, marine.weapon_cooldown / 15.0)
-
-        # Get zergling observations (pad with None if dead)
-        if zerglings:
-            z1 = zerglings[0] if len(zerglings) > 0 else None
-            z2 = zerglings[1] if len(zerglings) > 1 else None
-        else:
-            z1, z2 = None, None
-
-        z1_obs = self._get_zergling_obs(marine, z1)
-        z2_obs = self._get_zergling_obs(marine, z2)
-
-        # Time remaining (1.0 -> 0.0 as episode progresses)
-        time_remaining = 1.0 - (self.current_step / MAX_EPISODE_STEPS)
-
-        logger.debug(f"Marine health: {own_health}, cooldown: {weapon_cooldown_norm}")
-        logger.debug(f"Zergling 1 obs: {z1_obs}")
-        logger.debug(f"Zergling 2 obs: {z2_obs}")
-        logger.debug(f"Time remaining: {time_remaining}")
-
-        obs = [time_remaining, own_health, weapon_cooldown, weapon_cooldown_norm, *z1_obs, *z2_obs]
-
+        obs = [
+            time_left, hp, cd, cd_norm,
+            *self._get_enemy_obs(self.enemies[0]),
+            *self._get_enemy_obs(self.enemies[1]),
+        ]
         return np.array(obs, dtype=np.float32)
 
     def _compute_reward(self) -> float:
-        """Compute reward using configurable reward strategy"""
-        ctx = RewardContext(
-            marine=self.units[1][0] if self.units[1] else None,
-            zerglings=self.units[2],
-            damage_dealt=self.damage.dealt_step,
-            damage_taken=self.damage.taken_step,
-            current_step=self.current_step,
-            max_steps=MAX_EPISODE_STEPS,
-            game_steps_per_env=self.game_steps_per_env,
-        )
+        if self.current_step >= MAX_EPISODE_STEPS:
+            return 0.0
 
-        reward = self.reward_strategy.compute(ctx)
-        logger.debug(f"Damage step: dealt={self.damage.dealt_step}, taken={self.damage.taken_step}, reward={reward}")
-        return reward
+        if self.marine is None or self.enemies.all_dead():
+            enemy_hp_left = self.enemies.total_health()
+            enemy_max_hp = ZERGLING_MAX_HP * NUM_ZERGLINGS
+            return 1.0 - (enemy_hp_left / enemy_max_hp)
 
-    def _agent_action(self, action: int) -> None:
-        """Execute discrete action."""
-        logger.debug(f"Agent action: {action}")
+        return 0.0
 
-        marine = self.units[1][0]
-        zerglings = self.units[2]
+    def _execute_action(self, action: dict) -> None:
+        if self.marine is None:
+            return
 
-        if self._is_move_action(action):
-            # Move in specified direction
-            angle = self._action_to_angle(action)
-            dx = math.cos(angle) * MOVE_STEP_SIZE
-            dy = math.sin(angle) * MOVE_STEP_SIZE
-            target_x = marine.x + dx
-            target_y = marine.y + dy
-            self.client.unit_move(marine.tag, (target_x, target_y))
+        command = action["command"]
 
-        elif action == self.action_attack_z1:
-            if len(zerglings) > 0:
-                self.client.unit_attack_unit(marine.tag, zerglings[0].tag)
+        if command == ACTION_MOVE:
+            sin_a, cos_a = action["angle"]
+            target_x = self.marine.x + cos_a * MOVE_STEP_SIZE
+            target_y = self.marine.y + sin_a * MOVE_STEP_SIZE
+            self.client.unit_move(self.marine.tag, (target_x, target_y))
 
-        elif action == self.action_attack_z2:
-            if len(zerglings) > 1:
-                self.client.unit_attack_unit(marine.tag, zerglings[1].tag)
+        elif command == ACTION_ATTACK_Z1:
+            enemy = self.enemies[0]
+            if enemy is not None:
+                self.client.unit_attack_unit(self.marine.tag, enemy.tag)
 
-        elif action == self.action_stop:
-            self.client.unit_stop(marine.tag)
+        elif command == ACTION_ATTACK_Z2:
+            enemy = self.enemies[1]
+            if enemy is not None:
+                self.client.unit_attack_unit(self.marine.tag, enemy.tag)
 
-        elif action == self.action_skip:
-            # Do nothing - continue previous action
-            pass
+    def get_action_mask(self) -> np.ndarray:
+        mask = np.ones(NUM_COMMANDS, dtype=bool)
 
-        else:
-            raise ValueError(f"Invalid action: {action}")
+        if self.marine is None:
+            mask[ACTION_ATTACK_Z1] = False
+            mask[ACTION_ATTACK_Z2] = False
+            return mask
 
-    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
+        for i, action_idx in enumerate([ACTION_ATTACK_Z1, ACTION_ATTACK_Z2]):
+            enemy = self.enemies[i]
+            if enemy is None:
+                mask[action_idx] = False
+            else:
+                mask[action_idx] = enemy.distance_to(self.marine) < MARINE_RANGE
+
+        return mask
+
+    def reset(self, **__) -> tuple[np.ndarray, dict[str, Any]]:
         self.current_step = 0
         self.terminated = False
-        # Reset damage tracking
-        self.damage.reset()
-        # Reset reward strategy state (e.g., momentum history)
-        self.reward_strategy.reset()
-        self.clean_battlefield()
-        self.prepare_battlefield()
-        return self._compute_observation(), {}
+        self.marine = None
+        self.enemies.reset()
+        self._clean_battlefield()
+        self._prepare_battlefield()
+        return self._compute_observation(), {"action_mask": self.get_action_mask()}
 
-    def step(self, action: int) -> tuple:
-        logger.debug(f"Environment step {self.current_step} with action {action}")
-
+    def step(self, action: dict) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         if not self.terminated:
-            self._agent_action(action)
-            self.game.step(count=self.game_steps_per_env)
-            self.current_step += self.game_steps_per_env
+            self._execute_action(action)
+            self.game.step(count=GAME_STEPS_PER_ENV)
+            self.current_step += GAME_STEPS_PER_ENV
 
-        self.observe_units()
+        self._observe_units()
+
         obs = self._compute_observation()
         reward = self._compute_reward()
         truncated = self.current_step >= MAX_EPISODE_STEPS
-        # Win = marine survived AND all zerglings dead
-        won = len(self.units[1]) > 0 and len(self.units[2]) == 0
-        return obs, reward, self.terminated, truncated, {"won": won}
+        won = self.marine is not None and self.enemies.all_dead()
+
+        return obs, reward, self.terminated, truncated, {"won": won, "action_mask": self.get_action_mask()}
 
     def close(self) -> None:
         self.game.close()
-
-
-# Module-level helpers for backwards compatibility and external use
-def get_num_actions(num_move_directions: int = DEFAULT_NUM_MOVE_DIRECTIONS) -> int:
-    """Get total number of actions for given move directions."""
-    return num_move_directions + 4
-
-
-def get_action_indices(num_move_directions: int = DEFAULT_NUM_MOVE_DIRECTIONS) -> dict[str, int]:
-    """Get action index mapping for given move directions."""
-    return {
-        "attack_z1": num_move_directions,
-        "attack_z2": num_move_directions + 1,
-        "stop": num_move_directions + 2,
-        "skip": num_move_directions + 3,
-    }

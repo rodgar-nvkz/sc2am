@@ -1,275 +1,277 @@
 """
-Test script to verify environment actions work correctly.
+Test script for smarte_v1 environment.
 
-Run with: python -m scam.smarte_v0.test_env
+Run with: python -m scam.smarte_v1.test_env [test_number|a]
+Examples:
+    python -m scam.smarte_v1.test_env 1    # Run movement test
+    python -m scam.smarte_v1.test_env a    # Run all tests
+    python -m scam.smarte_v1.test_env      # Interactive mode
 """
 
 import math
-import time
+import sys
 
 import numpy as np
 
-from .env import MARINE_RANGE, SC2GymEnv
+from .env import (
+    ACTION_ATTACK_Z1,
+    ACTION_ATTACK_Z2,
+    ACTION_MOVE,
+    NUM_COMMANDS,
+    SC2GymEnv,
+)
 
 
-def print_obs(obs: np.ndarray, step: int, action: int | None = None) -> None:
+def make_action(command: int, angle_rad: float = 0.0) -> dict:
+    """Helper to create action dict."""
+    return {
+        "command": command,
+        "angle": np.array([math.sin(angle_rad), math.cos(angle_rad)], dtype=np.float32),
+    }
+
+
+def print_obs(obs: np.ndarray, step: int, action: dict | None = None, mask: np.ndarray | None = None) -> None:
     """Pretty print observation."""
-    action_names = ["MOVE_E", "MOVE_N", "MOVE_W", "MOVE_S", "ATK_Z1", "ATK_Z2", "STOP", "SKIP"]
-    action_str = action_names[action] if action is not None else "N/A"
+    cmd_names = ["MOVE", "ATK_Z1", "ATK_Z2"]
 
-    time_remaining = obs[0]
+    if action is not None:
+        cmd = action["command"]
+        angle = math.degrees(math.atan2(action["angle"][0], action["angle"][1]))
+        action_str = f"{cmd_names[cmd]} ({angle:.0f}°)"
+    else:
+        action_str = "N/A"
+
+    time_left = obs[0]
     marine_hp = obs[1]
     weapon_cd = obs[2]
     weapon_cd_norm = obs[3]
 
-    z1_hp = obs[4]
-    z1_sin = obs[5]
-    z1_cos = obs[6]
-    z1_dist_norm = obs[7]
-    z1_dist = z1_dist_norm * 30.0
-    z1_angle = math.degrees(math.atan2(z1_sin, z1_cos))
+    z1_hp, z1_sin, z1_cos, z1_dist_norm = obs[4:8]
+    z2_hp, z2_sin, z2_cos, z2_dist_norm = obs[8:12]
 
-    z2_hp = obs[8]
-    z2_sin = obs[9]
-    z2_cos = obs[10]
-    z2_dist_norm = obs[11]
+    z1_dist = z1_dist_norm * 30.0
     z2_dist = z2_dist_norm * 30.0
+    z1_angle = math.degrees(math.atan2(z1_sin, z1_cos))
     z2_angle = math.degrees(math.atan2(z2_sin, z2_cos))
 
     print(f"\n{'='*60}")
-    print(f"Step {step:3d} | Action: {action_str:8s}")
+    print(f"Step {step:3d} | Action: {action_str}")
+    if mask is not None:
+        mask_str = " ".join(f"{cmd_names[i]}={'Y' if mask[i] else 'N'}" for i in range(NUM_COMMANDS))
+        print(f"Mask: [{mask_str}]")
     print(f"{'='*60}")
-    print(f"Time remaining: {time_remaining:.2f}")
-    print(f"Marine HP: {marine_hp:.2f} | Weapon CD: {weapon_cd:.0f} ({weapon_cd_norm:.2f})")
-    print(f"Z1: HP={z1_hp:.2f}, Dist={z1_dist:.1f} (range={MARINE_RANGE}), Angle={z1_angle:.0f}°")
-    print(f"Z2: HP={z2_hp:.2f}, Dist={z2_dist:.1f} (range={MARINE_RANGE}), Angle={z2_angle:.0f}°")
+    print(f"Time left: {time_left:.2f} | Marine HP: {marine_hp:.2f} | CD: {weapon_cd:.0f} ({weapon_cd_norm:.2f})")
+    print(f"Z1: HP={z1_hp:.2f}, Dist={z1_dist:.1f}, Angle={z1_angle:.0f}°")
+    print(f"Z2: HP={z2_hp:.2f}, Dist={z2_dist:.1f}, Angle={z2_angle:.0f}°")
 
 
-def test_all_actions():
-    """Test each action type and verify it has an effect."""
-    print("\n" + "="*60)
-    print("TEST: Verify all actions have observable effects")
-    print("="*60)
+def test_movement():
+    """Test movement with sin/cos angles."""
+    print("\n" + "=" * 60)
+    print("TEST: Movement with sin/cos angles")
+    print("=" * 60)
 
-    env = SC2GymEnv({"num_move_directions": 4})
-
-    try:
-        # Test each action
-        for action in range(env.num_actions):
-            obs, _ = env.reset()
-            print_obs(obs, 0, None)
-
-            # Take the action
-            obs2, reward, terminated, truncated, info = env.step(action)
-            print_obs(obs2, 1, action)
-
-            # Compare observations
-            diff = np.abs(obs2 - obs)
-            changed_indices = np.where(diff > 0.001)[0]
-
-            action_names = ["MOVE_E", "MOVE_N", "MOVE_W", "MOVE_S", "ATK_Z1", "ATK_Z2", "STOP", "SKIP"]
-            obs_names = ["time", "marine_hp", "wpn_cd", "wpn_cd_norm",
-                        "z1_hp", "z1_sin", "z1_cos", "z1_dist",
-                        "z2_hp", "z2_sin", "z2_cos", "z2_dist"]
-
-            print(f"\nAction {action} ({action_names[action]}): Changed indices = {changed_indices}")
-            for idx in changed_indices:
-                print(f"  {obs_names[idx]}: {obs[idx]:.3f} -> {obs2[idx]:.3f} (Δ={diff[idx]:.3f})")
-
-            if len(changed_indices) <= 1:  # Only time changed
-                print(f"  ⚠️  WARNING: Action {action_names[action]} had no effect besides time!")
-
-            print("-"*60)
-            time.sleep(0.5)
-
-    finally:
-        env.close()
-
-
-def test_movement_directions():
-    """Test that movement actions move in correct directions."""
-    print("\n" + "="*60)
-    print("TEST: Verify movement directions are correct")
-    print("="*60)
-
-    env = SC2GymEnv({"num_move_directions": 4})
+    env = SC2GymEnv()
 
     try:
-        # For each move direction, check that distance to zerglings changes appropriately
-        for action in range(4):  # 0=E, 1=N, 2=W, 3=S
-            obs, _ = env.reset()
+        obs, info = env.reset()
+        print_obs(obs, 0, None, info["action_mask"])
 
-            # Get initial zergling positions (via angle/distance)
-            z1_dist_before = obs[7] * 30.0
-            z1_angle_before = math.degrees(math.atan2(obs[5], obs[6]))
+        # Move in 4 cardinal directions
+        directions = [
+            (0, "East (0°)"),
+            (math.pi / 2, "North (90°)"),
+            (math.pi, "West (180°)"),
+            (-math.pi / 2, "South (-90°)"),
+        ]
 
-            # Take multiple steps in same direction
-            for step in range(5):
-                obs, _, terminated, _, _ = env.step(action)
+        done = False
+        for angle, name in directions:
+            print(f"\n--- Moving {name} for 3 steps ---")
+            for _ in range(3):
+                action = make_action(ACTION_MOVE, angle)
+                obs, reward, terminated, truncated, info = env.step(action)
+                print_obs(obs, env.current_step, action, info["action_mask"])
                 if terminated:
+                    done = True
                     break
-
-            z1_dist_after = obs[7] * 30.0
-            z1_angle_after = math.degrees(math.atan2(obs[5], obs[6]))
-
-            action_names = ["MOVE_E (0°)", "MOVE_N (90°)", "MOVE_W (180°)", "MOVE_S (270°)"]
-            print(f"\n{action_names[action]}:")
-            print(f"  Z1 distance: {z1_dist_before:.1f} -> {z1_dist_after:.1f}")
-            print(f"  Z1 angle:    {z1_angle_before:.0f}° -> {z1_angle_after:.0f}°")
-
-    finally:
-        env.close()
-
-
-def test_attack_cooldown():
-    """Test that attacking triggers cooldown."""
-    print("\n" + "="*60)
-    print("TEST: Verify attack triggers weapon cooldown")
-    print("="*60)
-
-    env = SC2GymEnv({"num_move_directions": 4})
-
-    try:
-        obs, _ = env.reset()
-        print_obs(obs, 0, None)
-
-        # Attack Z1
-        for step in range(10):
-            obs, reward, terminated, truncated, info = env.step(4)  # ATK_Z1
-            print_obs(obs, step + 1, 4)
-
-            if terminated:
-                print(f"\nEpisode ended! Won: {info.get('won', False)}")
+            if done:
                 break
 
-            time.sleep(0.2)
-
     finally:
         env.close()
 
 
-def test_kite_sequence():
-    """Test a manual kite sequence: attack -> move away -> attack."""
-    print("\n" + "="*60)
-    print("TEST: Manual kite sequence")
-    print("="*60)
+def test_attack():
+    """Test attack actions and action masks."""
+    print("\n" + "=" * 60)
+    print("TEST: Attack and action masks")
+    print("=" * 60)
 
-    env = SC2GymEnv({"num_move_directions": 4})
+    env = SC2GymEnv()
 
     try:
-        obs, _ = env.reset()
-        print_obs(obs, 0, None)
+        obs, info = env.reset()
+        print_obs(obs, 0, None, info["action_mask"])
 
-        # Kite pattern: find zergling direction, attack, move opposite
-        step = 0
-        while True:
-            # Get zergling angle to decide kite direction
-            z1_sin, z1_cos = obs[5], obs[6]
-            z1_angle = math.atan2(z1_sin, z1_cos)
-            z1_angle_deg = math.degrees(z1_angle)
+        # Get angle to Z1 from observation
+        z1_sin, z1_cos = obs[5], obs[6]
+        angle_to_z1 = math.atan2(z1_sin, z1_cos)
 
-            weapon_cd = obs[2]
-            z1_dist = obs[7] * 30.0
+        print(f"\n--- Moving toward Z1 (angle={math.degrees(angle_to_z1):.0f}°) ---")
 
-            # Decide action
-            if weapon_cd == 0 and z1_dist < MARINE_RANGE:
-                # Weapon ready and in range - attack!
-                action = 4  # ATK_Z1
+        # Move toward zerglings until attack is available
+        for _ in range(50):
+            mask = info["action_mask"]
+
+            if mask[ACTION_ATTACK_Z1]:
+                print("\n--- Attack available! Attacking Z1 ---")
+                action = make_action(ACTION_ATTACK_Z1)
             else:
-                # Move away from zergling
-                # Zergling is at angle z1_angle, so move opposite
-                opposite_angle = (z1_angle + math.pi) % (2 * math.pi)
-                # Convert to discrete direction (0=E, 1=N, 2=W, 3=S)
-                # Each direction covers 90 degrees
-                action = int((opposite_angle + math.pi/4) / (math.pi/2)) % 4
+                # Update angle from current obs
+                z1_sin, z1_cos = obs[5], obs[6]
+                angle_to_z1 = math.atan2(z1_sin, z1_cos)
+                action = make_action(ACTION_MOVE, angle_to_z1)
 
             obs, reward, terminated, truncated, info = env.step(action)
-            step += 1
-            print_obs(obs, step, action)
+            print_obs(obs, env.current_step, action, info["action_mask"])
+
+            if terminated:
+                print(f"\nEpisode ended! Reward: {reward:.3f}, Won: {info['won']}")
+                break
+
+    finally:
+        env.close()
+
+
+def test_kite():
+    """Test manual kite sequence: move toward -> attack -> move away -> repeat."""
+    print("\n" + "=" * 60)
+    print("TEST: Manual kite sequence")
+    print("=" * 60)
+
+    env = SC2GymEnv()
+
+    try:
+        obs, info = env.reset()
+        print_obs(obs, 0, None, info["action_mask"])
+
+        for step in range(200):
+            mask = info["action_mask"]
+            weapon_cd = obs[2]
+
+            # Get angle to closest zergling
+            z1_dist = obs[7] * 30.0
+            z2_dist = obs[11] * 30.0
+
+            if z1_dist <= z2_dist and obs[4] > 0:  # Z1 closer and alive
+                z_sin, z_cos = obs[5], obs[6]
+            elif obs[8] > 0:  # Z2 alive
+                z_sin, z_cos = obs[9], obs[10]
+            else:  # Only Z1 left
+                z_sin, z_cos = obs[5], obs[6]
+
+            angle_to_enemy = math.atan2(z_sin, z_cos)
+            angle_away = angle_to_enemy + math.pi  # Opposite direction
+
+            # Kite logic
+            if weapon_cd == 0 and (mask[ACTION_ATTACK_Z1] or mask[ACTION_ATTACK_Z2]):
+                # Attack closest available target
+                if mask[ACTION_ATTACK_Z1] and (not mask[ACTION_ATTACK_Z2] or z1_dist <= z2_dist):
+                    action = make_action(ACTION_ATTACK_Z1)
+                else:
+                    action = make_action(ACTION_ATTACK_Z2)
+            elif weapon_cd > 0:
+                # Kite away while on cooldown
+                action = make_action(ACTION_MOVE, angle_away)
+            else:
+                # Move toward enemy
+                action = make_action(ACTION_MOVE, angle_to_enemy)
+
+            obs, reward, terminated, truncated, info = env.step(action)
+
+            if step % 10 == 0 or terminated:
+                print_obs(obs, env.current_step, action, info["action_mask"])
 
             if terminated or truncated:
-                print(f"\nEpisode ended at step {step}! Won: {info.get('won', False)}, Reward: {reward}")
+                print(f"\nEpisode ended! Reward: {reward:.3f}, Won: {info['won']}")
                 break
-
-            if step > 100:
-                print("\nStopping after 100 steps")
-                break
-
-            time.sleep(0.1)
 
     finally:
         env.close()
 
 
 def test_random_policy():
-    """Test random policy to see distribution of outcomes."""
-    print("\n" + "="*60)
-    print("TEST: Random policy statistics (20 episodes)")
-    print("="*60)
+    """Test random policy statistics."""
+    print("\n" + "=" * 60)
+    print("TEST: Random policy (10 episodes)")
+    print("=" * 60)
 
-    env = SC2GymEnv({"num_move_directions": 4})
+    env = SC2GymEnv()
 
     try:
         wins = 0
-        total_rewards = []
-        episode_lengths = []
-        action_counts = [0] * env.num_actions
+        rewards = []
+        lengths = []
 
-        for ep in range(20):
-            obs, _ = env.reset()
+        for ep in range(10):
+            obs, info = env.reset()
             ep_reward = 0
             steps = 0
 
             while True:
-                action = env.action_space.sample()
-                action_counts[action] += 1
+                # Random action respecting mask
+                mask = info["action_mask"]
+                valid_commands = np.where(mask)[0]
+                command = np.random.choice(valid_commands)
+                angle = np.random.uniform(-math.pi, math.pi)
+                action = make_action(command, angle)
 
                 obs, reward, terminated, truncated, info = env.step(action)
                 ep_reward += reward
                 steps += 1
 
                 if terminated or truncated:
-                    if info.get('won', False):
+                    if info["won"]:
                         wins += 1
-                    total_rewards.append(ep_reward)
-                    episode_lengths.append(steps)
+                    rewards.append(ep_reward)
+                    lengths.append(steps)
+                    print(f"Episode {ep + 1}: steps={steps}, reward={ep_reward:.3f}, won={info['won']}")
                     break
 
-            print(f"Episode {ep+1}: steps={steps}, reward={ep_reward:.2f}, won={info.get('won', False)}")
-
-        print(f"\nSummary:")
-        print(f"  Win rate: {wins}/{20} = {wins/20*100:.1f}%")
-        print(f"  Avg reward: {np.mean(total_rewards):.2f}")
-        print(f"  Avg length: {np.mean(episode_lengths):.1f}")
-        print(f"  Action distribution: {action_counts}")
+        print("\nSummary:")
+        print(f"  Win rate: {wins}/10 = {wins * 10:.0f}%")
+        print(f"  Avg reward: {np.mean(rewards):.3f}")
+        print(f"  Avg length: {np.mean(lengths):.1f}")
 
     finally:
         env.close()
 
 
 def main():
-    """Run all tests."""
-    print("SC2 Environment Debug Tests")
-    print("="*60)
-
     tests = [
-        ("1. All Actions Effect", test_all_actions),
-        ("2. Movement Directions", test_movement_directions),
-        ("3. Attack Cooldown", test_attack_cooldown),
-        ("4. Manual Kite", test_kite_sequence),
-        ("5. Random Policy", test_random_policy),
+        ("1. Movement", test_movement),
+        ("2. Attack", test_attack),
+        ("3. Kite", test_kite),
+        ("4. Random", test_random_policy),
     ]
 
+    print("smarte_v1 Environment Tests")
+    print("=" * 60)
     print("\nAvailable tests:")
-    for i, (name, _) in enumerate(tests):
+    for name, _ in tests:
         print(f"  {name}")
 
-    print("\nSelect test (1-5, or 'a' for all): ", end="")
-    choice = input().strip().lower()
+    # Get choice from CLI args or interactive input
+    if len(sys.argv) > 1:
+        choice = sys.argv[1].strip().lower()
+    else:
+        print("\nSelect test (1-4, or 'a' for all): ", end="")
+        choice = input().strip().lower()
 
-    if choice == 'a':
-        for name, test_fn in tests:
-            test_fn()
+    if choice == "a":
+        for _, fn in tests:
+            fn()
     elif choice.isdigit() and 1 <= int(choice) <= len(tests):
         tests[int(choice) - 1][1]()
     else:
