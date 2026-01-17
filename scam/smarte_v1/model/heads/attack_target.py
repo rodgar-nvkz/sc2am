@@ -76,6 +76,7 @@ class AttackTargetHead(ActionHead):
                 - distribution: Categorical distribution object
         """
         # Apply temperature scaling
+        # Detach temperature for edge cases to prevent NaN gradients
         temperature = torch.clamp(
             torch.exp(self.log_temperature),
             self.min_temperature,
@@ -96,12 +97,12 @@ class AttackTargetHead(ActionHead):
         all_invalid = ~combined_mask.any(dim=-1) if combined_mask is not None else None
         if all_invalid is not None and all_invalid.any():
             # For samples with no valid targets, use uniform over all enemies
-            batch_size, num_enemies = attn_logits.shape
+            # Detach to prevent NaN gradients through temperature
             uniform_logits = torch.zeros_like(scaled_logits)
             scaled_logits = torch.where(
                 all_invalid.unsqueeze(-1).expand_as(scaled_logits),
                 uniform_logits,
-                scaled_logits,
+                scaled_logits.detach() if all_invalid.all() else scaled_logits,
             )
 
         # Create distribution
@@ -113,6 +114,9 @@ class AttackTargetHead(ActionHead):
 
         log_prob = dist.log_prob(attack_target)
         entropy = dist.entropy()
+
+        # Clamp log_prob to prevent -inf which causes NaN gradients
+        log_prob = torch.clamp(log_prob, min=-100.0)
 
         return attack_target, log_prob, entropy, dist
 
@@ -197,17 +201,19 @@ class AttackTargetHead(ActionHead):
         # Apply mask - only include ATTACK actions in loss
         if mask is not None:
             mask_float = mask.float()
-            num_valid = mask_float.sum().clamp(min=1.0)
-            loss = (loss_per_sample * mask_float).sum() / num_valid
+            num_valid_raw = mask_float.sum()
 
             # If no ATTACK actions in batch, return zero loss
-            if num_valid == 0:
+            if num_valid_raw == 0:
                 loss = torch.zeros(1, device=loss_per_sample.device, requires_grad=True).squeeze()
+            else:
+                loss = (loss_per_sample * mask_float).sum() / num_valid_raw
         else:
             loss = loss_per_sample.mean()
 
         # Compute metrics
         with torch.no_grad():
+            num_attack = mask.sum().item() if mask is not None else advantages.numel()
             if mask is not None and mask.any():
                 # Only compute metrics for ATTACK actions
                 masked_old = old_log_prob[mask]
@@ -225,7 +231,7 @@ class AttackTargetHead(ActionHead):
                 "loss": loss.item() if isinstance(loss, Tensor) else loss,
                 "approx_kl": approx_kl,
                 "clip_fraction": clip_fraction,
-                "num_attack_actions": mask.sum().item() if mask is not None else -1,
+                "num_attack_actions": int(num_attack),
                 "temperature": torch.exp(self.log_temperature).item(),
             },
         )

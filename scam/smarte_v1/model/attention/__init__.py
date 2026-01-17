@@ -161,62 +161,6 @@ class CrossAttention(nn.Module):
         return attn_logits
 
 
-class SharedBackbone(nn.Module):
-    """Shared backbone combining temporal encoding and cross-attention.
-
-    This module encapsulates the full forward pass from entity embeddings
-    to the shared representation used by all heads.
-
-    Output: [h_marine; context] concatenated
-        - h_marine: GRU output for marine (captures temporal info)
-        - context: Attention-weighted enemy aggregation
-    """
-
-    def __init__(self, config: ModelConfig, temporal_encoder, cross_attention):
-        super().__init__()
-        self.config = config
-        self.temporal_encoder = temporal_encoder
-        self.cross_attention = cross_attention
-
-    def forward(
-        self,
-        marine_emb: Tensor,
-        enemy_embs: Tensor,
-        hidden: tuple[Tensor, Tensor] | None = None,
-        enemy_mask: Tensor | None = None,
-    ) -> tuple[Tensor, Tensor, Tensor, tuple[Tensor, Tensor]]:
-        """Forward pass through temporal encoder and cross-attention.
-
-        Args:
-            marine_emb: Marine embedding from entity encoder (B, entity_embed_size)
-            enemy_embs: Enemy embeddings from entity encoder (B, N, entity_embed_size)
-            hidden: Temporal hidden state (h_marine, h_enemies)
-            enemy_mask: Valid enemy mask (B, N)
-
-        Returns:
-            Tuple of:
-                - backbone_out: Concatenated [h_marine; context] (B, backbone_output_size)
-                - attn_weights: Attention weights for attack targeting (B, N)
-                - attn_logits: Raw attention logits (B, N)
-                - new_hidden: Updated temporal hidden state
-        """
-        # Temporal encoding
-        h_marine, h_enemies, new_hidden = self.temporal_encoder(
-            marine_emb, enemy_embs, hidden, enemy_mask
-        )
-
-        # Cross-attention
-        context, attn_weights, attn_logits = self.cross_attention(
-            h_marine, h_enemies, enemy_mask
-        )
-
-        # Concatenate for heads
-        backbone_out = torch.cat([h_marine, context], dim=-1)
-
-        return backbone_out, attn_weights, attn_logits, new_hidden
-
-
 __all__ = [
     "CrossAttention",
-    "SharedBackbone",
 ]

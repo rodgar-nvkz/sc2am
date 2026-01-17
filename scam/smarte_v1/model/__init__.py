@@ -7,7 +7,7 @@ Architecture:
                         ↓
     CrossAttention (marine→enemies) → context, attn_weights
                         ↓
-    SharedBackbone output: [h_marine; context]
+    SharedBackbone output: [h_marine; context; time_left]
                         ↓
     ┌───────────────────┼───────────────────┐
     ↓                   ↓                   ↓
@@ -51,12 +51,26 @@ Example:
 """
 
 from .actor_critic import ActorCritic, ActorCriticOutput
-from .attention import CrossAttention, SharedBackbone
+from .attention import CrossAttention
 from .config import (
     ACTION_ATTACK,
     ACTION_MOVE,
     ACTION_STOP,
     NUM_ACTION_TYPES,
+    OBS_ENEMY_COS_OFFSET,
+    OBS_ENEMY_DIST_OFFSET,
+    OBS_ENEMY_FEATURE_SIZE,
+    OBS_ENEMY_HP_OFFSET,
+    OBS_ENEMY_SIN_OFFSET,
+    OBS_ENEMY_START,
+    OBS_MARINE_CD_BINARY_IDX,
+    OBS_MARINE_CD_NORM_IDX,
+    OBS_MARINE_END,
+    OBS_MARINE_HP_IDX,
+    OBS_MARINE_SIZE,
+    OBS_MARINE_START,
+    OBS_TIME_LEFT_IDX,
+    OBS_TIME_LEFT_SIZE,
     ModelConfig,
 )
 from .encoders import (
@@ -65,8 +79,6 @@ from .encoders import (
     EntityMLP,
     MarineEncoder,
     TemporalEncoder,
-    TemporalEncoderSequence,
-    VectorEncoder,
 )
 from .heads import (
     ActionHead,
@@ -77,7 +89,6 @@ from .heads import (
     CriticHead,
     DamageAuxHead,
     DistanceAuxHead,
-    DualValueHead,
     HeadLoss,
     HeadOutput,
     HybridAction,
@@ -95,17 +106,29 @@ __all__ = [
     "ACTION_ATTACK",
     "ACTION_STOP",
     "NUM_ACTION_TYPES",
+    # Observation index constants
+    "OBS_TIME_LEFT_IDX",
+    "OBS_TIME_LEFT_SIZE",
+    "OBS_MARINE_START",
+    "OBS_MARINE_HP_IDX",
+    "OBS_MARINE_CD_BINARY_IDX",
+    "OBS_MARINE_CD_NORM_IDX",
+    "OBS_MARINE_END",
+    "OBS_MARINE_SIZE",
+    "OBS_ENEMY_START",
+    "OBS_ENEMY_HP_OFFSET",
+    "OBS_ENEMY_SIN_OFFSET",
+    "OBS_ENEMY_COS_OFFSET",
+    "OBS_ENEMY_DIST_OFFSET",
+    "OBS_ENEMY_FEATURE_SIZE",
     # Encoders
     "EntityEncoder",
     "EntityMLP",
     "MarineEncoder",
     "EnemyEncoder",
     "TemporalEncoder",
-    "TemporalEncoderSequence",
-    "VectorEncoder",  # Legacy
     # Attention
     "CrossAttention",
-    "SharedBackbone",
     # Heads - Base
     "ActionHead",
     "ValueHead",
@@ -119,7 +142,6 @@ __all__ = [
     "AttackTargetHead",
     # Heads - Value
     "CriticHead",
-    "DualValueHead",
     # Heads - Auxiliary
     "DamageAuxHead",
     "DistanceAuxHead",

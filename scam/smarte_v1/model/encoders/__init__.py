@@ -7,12 +7,10 @@ Entity Encoders:
 
 Temporal Encoders:
     - TemporalEncoder: GRU-based encoder maintaining state across steps
-    - TemporalEncoderSequence: Efficient sequence processing for training
 """
 
 from .entity import EnemyEncoder, EntityEncoder, EntityMLP, MarineEncoder
-from .temporal import TemporalEncoder, TemporalEncoderSequence
-from .vector import VectorEncoder
+from .temporal import TemporalEncoder
 
 __all__ = [
     # Entity encoders
@@ -22,7 +20,4 @@ __all__ = [
     "EnemyEncoder",
     # Temporal encoders
     "TemporalEncoder",
-    "TemporalEncoderSequence",
-    # Legacy (kept for compatibility)
-    "VectorEncoder",
 ]

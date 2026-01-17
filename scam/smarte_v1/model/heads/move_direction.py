@@ -117,8 +117,12 @@ class MoveDirectionHead(ActionHead):
             direction = self._normalize(direction)
 
         # Compute log probability (sum over components)
-        # Note: We compute log_prob on the raw sample, not normalized
-        # This is an approximation but works well in practice
+        # Note: We compute log_prob on the normalized sample directly.
+        # Technically, this is an approximation since the Jacobian of the
+        # normalization transform should be included. However, this works
+        # well in practice because:
+        #   1. The std is relatively small, so samples are near unit length
+        #   2. PPO uses log prob ratios, so constant biases cancel out
         log_prob = dist.log_prob(direction).sum(dim=-1)  # (B,)
 
         # Compute entropy (sum over independent components)
@@ -194,17 +198,19 @@ class MoveDirectionHead(ActionHead):
         # Apply mask - only include MOVE actions in loss
         if mask is not None:
             mask_float = mask.float()
-            num_valid = mask_float.sum().clamp(min=1.0)
-            loss = (loss_per_sample * mask_float).sum() / num_valid
+            num_valid_raw = mask_float.sum()
 
             # If no MOVE actions in batch, return zero loss
-            if num_valid == 0:
+            if num_valid_raw == 0:
                 loss = torch.zeros(1, device=loss_per_sample.device, requires_grad=True).squeeze()
+            else:
+                loss = (loss_per_sample * mask_float).sum() / num_valid_raw
         else:
             loss = loss_per_sample.mean()
 
         # Compute metrics
         with torch.no_grad():
+            num_move = mask.sum().item() if mask is not None else advantages.numel()
             if mask is not None and mask.any():
                 # Only compute metrics for MOVE actions
                 masked_old = old_log_prob[mask]
@@ -222,7 +228,7 @@ class MoveDirectionHead(ActionHead):
                 "loss": loss.item() if isinstance(loss, Tensor) else loss,
                 "approx_kl": approx_kl,
                 "clip_fraction": clip_fraction,
-                "num_move_actions": mask.sum().item() if mask is not None else -1,
+                "num_move_actions": int(num_move),
             },
         )
 

@@ -17,7 +17,7 @@ never be penalized for not choosing an unavailable action.
 import torch
 from torch import Tensor, distributions, nn
 
-from ..config import ACTION_ATTACK, ACTION_MOVE, ACTION_STOP, ModelConfig
+from ..config import ACTION_ATTACK, ModelConfig
 from .base import ActionHead, HeadLoss
 
 
@@ -195,19 +195,17 @@ class ActionTypeHead(ActionHead):
 
         Returns:
             Action mask (B, 3) where True = valid action
+            - MOVE (0): Always available
+            - ATTACK (1): Only if weapon ready AND valid target exists
+            - STOP (2): Always available
         """
         batch_size = can_attack.shape[0]
         device = can_attack.device
 
+        # Initialize all actions as available (MOVE and STOP are always valid)
         mask = torch.ones(batch_size, 3, dtype=torch.bool, device=device)
-
-        # MOVE (0): Always available
-        mask[:, ACTION_MOVE] = True
 
         # ATTACK (1): Only if weapon ready AND valid target exists
         mask[:, ACTION_ATTACK] = can_attack & has_valid_target
-
-        # STOP (2): Always available
-        mask[:, ACTION_STOP] = True
 
         return mask

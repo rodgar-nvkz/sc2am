@@ -22,6 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "ipython~=9.9.0",
+    "pytest>=9.0.2",
 ]
 
 [[tool.uv.index]]

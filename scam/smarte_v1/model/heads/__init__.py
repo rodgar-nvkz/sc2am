@@ -8,7 +8,6 @@ Head Types:
 
     Value Heads:
         - CriticHead: Standard V(s) estimation
-        - DualValueHead: Experimental win/lose conditional values
 
     Auxiliary Heads:
         - DamageAuxHead: Predict damage in next N steps
@@ -36,7 +35,7 @@ from .base import (
     ValueHead,
 )
 from .move_direction import MoveDirectionHead
-from .value import CriticHead, DualValueHead
+from .value import CriticHead
 
 __all__ = [
     # Base classes and data structures
@@ -52,7 +51,6 @@ __all__ = [
     "AttackTargetHead",
     # Value heads
     "CriticHead",
-    "DualValueHead",
     # Auxiliary heads
     "DamageAuxHead",
     "DistanceAuxHead",

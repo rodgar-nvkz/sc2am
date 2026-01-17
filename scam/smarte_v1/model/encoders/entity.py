@@ -10,7 +10,14 @@ Architecture:
 
 from torch import Tensor, nn
 
-from ..config import ModelConfig
+from ..config import (
+    OBS_ENEMY_HP_OFFSET,
+    OBS_ENEMY_START,
+    OBS_MARINE_END,
+    OBS_MARINE_START,
+    OBS_TIME_LEFT_IDX,
+    ModelConfig,
+)
 
 
 def get_activation(name: str) -> nn.Module:
@@ -217,21 +224,20 @@ class EntityEncoder(nn.Module):
         """
         batch_size = obs.shape[0]
 
-        # Time left
-        time_left = obs[:, 0:1]
+        # Time left (using config constants)
+        time_left = obs[:, OBS_TIME_LEFT_IDX : OBS_TIME_LEFT_IDX + 1]
 
-        # Marine obs: hp, cd_binary, cd_norm (indices 1, 2, 3)
-        marine_obs = obs[:, 1:4]  # [hp, cd_binary, cd_norm]
+        # Marine obs: hp, cd_binary, cd_norm (using config constants)
+        marine_obs = obs[:, OBS_MARINE_START:OBS_MARINE_END]
 
         # Enemy obs: reshape the rest into (B, N, 4)
-        enemy_start = 4
-        enemy_flat = obs[:, enemy_start:]  # (B, N * 4)
+        enemy_flat = obs[:, OBS_ENEMY_START:]  # (B, N * enemy_obs_size)
         num_enemies = self.config.max_enemies
         enemy_obs = enemy_flat.view(batch_size, num_enemies, self.config.enemy_obs_size)
 
         # Create enemy mask based on hp (first feature per enemy)
         # Enemy is valid if hp > 0
-        enemy_hp = enemy_obs[:, :, 0]
+        enemy_hp = enemy_obs[:, :, OBS_ENEMY_HP_OFFSET]
         enemy_mask = enemy_hp > 0
 
         return time_left, marine_obs, enemy_obs, enemy_mask
@@ -265,4 +271,4 @@ class EntityEncoder(nn.Module):
         Returns:
             Marine observation (B, marine_obs_size)
         """
-        return obs[:, 1:4]
+        return obs[:, OBS_MARINE_START:OBS_MARINE_END]

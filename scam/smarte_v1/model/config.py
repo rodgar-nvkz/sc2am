@@ -17,6 +17,30 @@ ACTION_ATTACK = 1
 ACTION_STOP = 2
 NUM_ACTION_TYPES = 3
 
+# === Observation Index Constants ===
+# These define the structure of the flat observation vector.
+# Observation format: [time_left, marine_hp, cd_binary, cd_norm, enemy1..., enemy2...]
+
+# Time left (episode progress)
+OBS_TIME_LEFT_IDX = 0
+OBS_TIME_LEFT_SIZE = 1
+
+# Marine observation indices
+OBS_MARINE_START = 1
+OBS_MARINE_HP_IDX = 1
+OBS_MARINE_CD_BINARY_IDX = 2
+OBS_MARINE_CD_NORM_IDX = 3
+OBS_MARINE_END = 4
+OBS_MARINE_SIZE = 3  # hp, cd_binary, cd_norm
+
+# Enemy observation indices (per enemy: hp, sin, cos, dist)
+OBS_ENEMY_START = 4
+OBS_ENEMY_HP_OFFSET = 0
+OBS_ENEMY_SIN_OFFSET = 1
+OBS_ENEMY_COS_OFFSET = 2
+OBS_ENEMY_DIST_OFFSET = 3
+OBS_ENEMY_FEATURE_SIZE = 4
+
 
 @dataclass
 class ModelConfig:
@@ -88,11 +112,17 @@ class ModelConfig:
     # Whether to use skip connections (concat raw obs to head inputs)
     use_skip_connections: bool = True
 
+    # Whether to include time_left in backbone output
+    use_time_feature: bool = True
+
     # Computed properties
     @property
     def backbone_output_size(self) -> int:
-        """Size of shared backbone output (GRU hidden + attention context)."""
-        return self.gru_hidden_size + self.entity_embed_size
+        """Size of shared backbone output (GRU hidden + attention context + optional time)."""
+        size = self.gru_hidden_size + self.entity_embed_size
+        if self.use_time_feature:
+            size += OBS_TIME_LEFT_SIZE
+        return size
 
     @property
     def head_input_size(self) -> int:

@@ -59,10 +59,12 @@ class ActorCriticOutput:
         hidden: New hidden state for next step (h_marine, h_enemies)
         attn_weights: Attention weights over enemies (useful for visualization)
 
-        Component log probs (for training):
+        Component log probs (always stored for training):
             action_type_log_prob: Log prob of action type
-            move_direction_log_prob: Log prob of direction (None if not MOVE)
-            attack_target_log_prob: Log prob of target (None if not ATTACK)
+            move_direction_log_prob: Log prob of direction (computed for all samples,
+                                     but only contributes to loss for MOVE actions)
+            attack_target_log_prob: Log prob of target (computed for all samples,
+                                    but only contributes to loss for ATTACK actions)
 
         Auxiliary predictions (optional):
             aux_damage: Predicted damage in next N steps
@@ -76,10 +78,10 @@ class ActorCriticOutput:
     hidden: tuple[Tensor, Tensor]
     attn_weights: Tensor
 
-    # Component log probs
+    # Component log probs (always stored, masking applied during loss computation)
     action_type_log_prob: Tensor
-    move_direction_log_prob: Tensor | None = None
-    attack_target_log_prob: Tensor | None = None
+    move_direction_log_prob: Tensor  # Always computed, masked during training
+    attack_target_log_prob: Tensor  # Always computed, masked during training
 
     # Auxiliary predictions
     aux_damage: Tensor | None = None
@@ -225,7 +227,11 @@ class ActorCritic(nn.Module):
         )
 
         # === Backbone Output ===
-        backbone_out = torch.cat([h_marine, context], dim=-1)
+        # Include time_left if configured (helps value function understand episode progress)
+        if self.config.use_time_feature:
+            backbone_out = torch.cat([h_marine, context, time_left], dim=-1)
+        else:
+            backbone_out = torch.cat([h_marine, context], dim=-1)
 
         # === Compute Action Mask ===
         if action_mask is None:
@@ -318,8 +324,8 @@ class ActorCritic(nn.Module):
             hidden=new_hidden,
             attn_weights=attn_weights,
             action_type_log_prob=action_type_log_prob,
-            move_direction_log_prob=move_log_prob if is_move.any() else None,
-            attack_target_log_prob=attack_log_prob if is_attack.any() else None,
+            move_direction_log_prob=move_log_prob,  # Always stored, masked during loss
+            attack_target_log_prob=attack_log_prob,  # Always stored, masked during loss
             aux_damage=aux_damage,
             aux_distance=aux_distance,
         )
@@ -406,6 +412,8 @@ class ActorCritic(nn.Module):
         attn_weights = torch.stack([o.attn_weights for o in outputs], dim=1)
 
         action_type_log_prob = torch.stack([o.action_type_log_prob for o in outputs], dim=1)
+        move_direction_log_prob = torch.stack([o.move_direction_log_prob for o in outputs], dim=1)
+        attack_target_log_prob = torch.stack([o.attack_target_log_prob for o in outputs], dim=1)
 
         # Handle optional fields - filter out None values before stacking
         aux_damage = None
@@ -430,8 +438,8 @@ class ActorCritic(nn.Module):
             hidden=final_hidden,
             attn_weights=attn_weights,
             action_type_log_prob=action_type_log_prob,
-            move_direction_log_prob=None,  # Complex to stack due to masking
-            attack_target_log_prob=None,
+            move_direction_log_prob=move_direction_log_prob,
+            attack_target_log_prob=attack_target_log_prob,
             aux_damage=aux_damage,
             aux_distance=aux_distance,
         )
@@ -490,8 +498,11 @@ class ActorCritic(nn.Module):
             h_marine, h_enemies, enemy_mask
         )
 
-        # Backbone
-        backbone_out = torch.cat([h_marine, context], dim=-1)
+        # Backbone (include time_left if configured)
+        if self.config.use_time_feature:
+            backbone_out = torch.cat([h_marine, context, time_left], dim=-1)
+        else:
+            backbone_out = torch.cat([h_marine, context], dim=-1)
 
         # Action mask
         if action_mask is None:
@@ -579,15 +590,14 @@ class ActorCritic(nn.Module):
         )
 
         # === Move Direction Loss (masked to MOVE actions) ===
-        if is_move.any() and "move_direction" in old_log_probs:
-            # Need to get move direction log prob from output
-            # For now, use the stored one or recompute
-            move_log_prob = old_log_probs.get("move_direction_new", output.log_prob - output.action_type_log_prob)
-            if hasattr(move_log_prob, 'reshape'):
-                move_log_prob = move_log_prob.reshape(-1)
+        # Use stored log probs directly - no need to compute via subtraction
+        move_direction_log_prob = output.move_direction_log_prob
+        if move_direction_log_prob.dim() > 1:
+            move_direction_log_prob = move_direction_log_prob.reshape(-1)
 
+        if is_move.any() and "move_direction" in old_log_probs:
             losses["move_direction"] = self.move_direction_head.compute_loss(
-                new_log_prob=move_log_prob,
+                new_log_prob=move_direction_log_prob,
                 old_log_prob=old_log_probs["move_direction"].reshape(-1),
                 advantages=advantages,
                 clip_epsilon=clip_epsilon,
@@ -596,17 +606,18 @@ class ActorCritic(nn.Module):
         else:
             losses["move_direction"] = HeadLoss(
                 loss=torch.tensor(0.0, device=value.device),
-                metrics={"loss": 0.0, "num_move_actions": 0},
+                metrics={"loss": 0.0, "approx_kl": 0.0, "clip_fraction": 0.0, "num_move_actions": 0},
             )
 
         # === Attack Target Loss (masked to ATTACK actions) ===
-        if is_attack.any() and "attack_target" in old_log_probs:
-            attack_log_prob = old_log_probs.get("attack_target_new", output.log_prob - output.action_type_log_prob)
-            if hasattr(attack_log_prob, 'reshape'):
-                attack_log_prob = attack_log_prob.reshape(-1)
+        # Use stored log probs directly - no need to compute via subtraction
+        attack_target_log_prob = output.attack_target_log_prob
+        if attack_target_log_prob.dim() > 1:
+            attack_target_log_prob = attack_target_log_prob.reshape(-1)
 
+        if is_attack.any() and "attack_target" in old_log_probs:
             losses["attack_target"] = self.attack_target_head.compute_loss(
-                new_log_prob=attack_log_prob,
+                new_log_prob=attack_target_log_prob,
                 old_log_prob=old_log_probs["attack_target"].reshape(-1),
                 advantages=advantages,
                 clip_epsilon=clip_epsilon,
@@ -615,7 +626,7 @@ class ActorCritic(nn.Module):
         else:
             losses["attack_target"] = HeadLoss(
                 loss=torch.tensor(0.0, device=value.device),
-                metrics={"loss": 0.0, "num_attack_actions": 0},
+                metrics={"loss": 0.0, "approx_kl": 0.0, "clip_fraction": 0.0, "num_attack_actions": 0},
             )
 
         # === Value Loss ===
@@ -648,12 +659,13 @@ class ActorCritic(nn.Module):
         Returns:
             Dict with "command" and "angle" for environment
         """
-        action_type = action.action_type[batch_idx].item()
-        move_direction = action.move_direction[batch_idx]
-        attack_target = action.attack_target[batch_idx].item()
+        # Detach all tensors before extracting values (consistent handling)
+        action_type = action.action_type[batch_idx].detach().item()
+        move_direction = action.move_direction[batch_idx].detach()
+        attack_target = action.attack_target[batch_idx].detach().item()
 
-        # Detach tensor before converting to numpy
-        angle = move_direction.detach().cpu().numpy()
+        # Convert direction to numpy
+        angle = move_direction.cpu().numpy()
 
         if action_type == ACTION_MOVE:
             return {
