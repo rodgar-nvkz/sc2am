@@ -1,17 +1,31 @@
-"""LSTM-based ActorCritic model for sequential decision making.
+"""Entity-attention based ActorCritic model for SC2 marine micro.
 
 Architecture:
-    obs (obs_size) → VectorEncoder (MLP) → LSTM → [ActorHead, CriticHead]
+    Observation → EntityEncoder → [marine_emb, enemy_embs]
+                        ↓
+    TemporalEncoder (GRU) → [h_marine, h_enemies]
+                        ↓
+    CrossAttention (marine→enemies) → context, attn_weights
+                        ↓
+    SharedBackbone output: [h_marine; context]
+                        ↓
+    ┌───────────────────┼───────────────────┐
+    ↓                   ↓                   ↓
+ActionTypeHead    MoveDirectionHead    AttackTargetHead
+    ↓                   ↓                   ↓
+ [MOVE,ATTACK,STOP]  [sin,cos]         enemy_idx
+    ↓                   ↓                   ↓
+    └─────── HybridAction ─────────────────┘
+                        ↓
+              ValueHead → V(s)
+              AuxiliaryHeads → damage_pred, distance_pred
 
-The LSTM enables the agent to maintain memory across timesteps,
-which is crucial for learning chase → attack → kite sequences.
-
-Action space (40 discrete actions):
-    - 0-35: MOVE in direction (angle = i * 10°)
-    - 36: ATTACK_Z1
-    - 37: ATTACK_Z2
-    - 38: STOP
-    - 39: SKIP (no-op)
+Key Features:
+    1. Entity-based encoding for variable number of enemies
+    2. GRU temporal encoding for memory across steps
+    3. Cross-attention for interpretable enemy targeting
+    4. Conditional action heads (only active when relevant)
+    5. Auxiliary tasks for richer training signal
 """
 
 from dataclasses import dataclass
@@ -19,132 +33,176 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor, nn
 
-from .config import ModelConfig
-from .encoders import VectorEncoder
-from .heads import CriticHead, DiscreteActionHead, HeadLoss, HeadOutput
+from .attention import CrossAttention
+from .config import ACTION_ATTACK, ACTION_MOVE, ACTION_STOP, ModelConfig
+from .encoders import EntityEncoder, TemporalEncoder
+from .heads import (
+    ActionTypeHead,
+    AttackTargetHead,
+    CombinedAuxiliaryHead,
+    CriticHead,
+    HeadLoss,
+    HybridAction,
+    MoveDirectionHead,
+)
 
 
 @dataclass
 class ActorCriticOutput:
-    """Complete output from ActorCritic forward pass."""
+    """Complete output from ActorCritic forward pass.
 
-    # Action head output
-    action: HeadOutput
+    Attributes:
+        action: HybridAction with type, direction, and target
+        log_prob: Combined log probability of the action
+        entropy: Combined entropy of the action distribution
+        value: Value estimate V(s)
+        hidden: New hidden state for next step (h_marine, h_enemies)
+        attn_weights: Attention weights over enemies (useful for visualization)
 
-    # Value estimate
+        Component log probs (for training):
+            action_type_log_prob: Log prob of action type
+            move_direction_log_prob: Log prob of direction (None if not MOVE)
+            attack_target_log_prob: Log prob of target (None if not ATTACK)
+
+        Auxiliary predictions (optional):
+            aux_damage: Predicted damage in next N steps
+            aux_distance: Predicted distance to nearest enemy
+    """
+
+    action: HybridAction
+    log_prob: Tensor
+    entropy: Tensor
     value: Tensor
-
-    # New hidden state (for next step)
     hidden: tuple[Tensor, Tensor]
+    attn_weights: Tensor
 
-    @property
-    def entropy(self) -> Tensor:
-        """Action entropy."""
-        return self.action.entropy
+    # Component log probs
+    action_type_log_prob: Tensor
+    move_direction_log_prob: Tensor | None = None
+    attack_target_log_prob: Tensor | None = None
 
-    @property
-    def log_prob(self) -> Tensor:
-        """Action log probability."""
-        return self.action.log_prob
+    # Auxiliary predictions
+    aux_damage: Tensor | None = None
+    aux_distance: Tensor | None = None
 
 
 class ActorCritic(nn.Module):
-    """LSTM-based actor-critic for discrete action space.
+    """Entity-attention based actor-critic for hybrid action space.
 
-    Architecture:
-        obs → VectorEncoder → features
-                                  ↓
-                               LSTM(features, hidden) → lstm_out, new_hidden
-                                  ↓
-              [lstm_out, obs] → ActorHead → action distribution
-                    ↓
-              [lstm_out, obs] → CriticHead → value
+    This model processes observations through:
+        1. Entity encoders (separate for marine and enemies)
+        2. Temporal GRU (maintains memory across steps)
+        3. Cross-attention (marine attends to enemies)
+        4. Multiple output heads (action type, direction, target, value, auxiliary)
 
-    The skip connection (concatenating raw obs) preserves precise angle information
-    for movement decisions.
+    The architecture supports:
+        - Variable number of enemies (via attention masking)
+        - Hybrid action space (discrete type + conditional continuous/discrete params)
+        - Temporal context (GRU hidden state across steps)
+        - Auxiliary tasks for richer training signal
     """
 
     def __init__(self, config: ModelConfig):
-        """Initialize ActorCritic model.
-
-        Args:
-            config: Model configuration defining architecture.
-        """
         super().__init__()
         self.config = config
 
-        # Encoder: obs → features
-        self.encoder = VectorEncoder(config)
+        # === Entity Encoder ===
+        self.entity_encoder = EntityEncoder(config)
 
-        # LSTM: features → lstm_out
-        self.lstm = nn.LSTM(
-            input_size=config.embed_size,
-            hidden_size=config.lstm_hidden_size,
-            num_layers=config.lstm_num_layers,
-            batch_first=True,
-        )
+        # === Temporal Encoder ===
+        self.temporal_encoder = TemporalEncoder(config)
 
-        # Initialize LSTM weights
-        if config.init_orthogonal:
-            for name, param in self.lstm.named_parameters():
-                if "weight_ih" in name:
-                    nn.init.orthogonal_(param, gain=config.init_gain)
-                elif "weight_hh" in name:
-                    nn.init.orthogonal_(param, gain=config.init_gain)
-                elif "bias" in name:
-                    nn.init.constant_(param, 0.0)
-                    # Set forget gate bias to 1 for better gradient flow
-                    hidden_size = config.lstm_hidden_size
-                    param.data[hidden_size:2*hidden_size].fill_(1.0)
+        # === Cross-Attention ===
+        self.cross_attention = CrossAttention(config)
 
-        # Heads: lstm_out (+ skip) → action/value
-        self.action_head = DiscreteActionHead(config)
+        # === Action Heads ===
+        self.action_type_head = ActionTypeHead(config)
+        self.move_direction_head = MoveDirectionHead(config)
+        self.attack_target_head = AttackTargetHead(config)
+
+        # === Value Head ===
         self.value_head = CriticHead(config)
 
-    def get_initial_hidden(self, batch_size: int = 1, device: torch.device | None = None) -> tuple[Tensor, Tensor]:
-        """Get zero-initialized hidden state for LSTM.
+        # === Auxiliary Heads ===
+        if config.use_auxiliary_tasks:
+            self.auxiliary_head = CombinedAuxiliaryHead(config)
+        else:
+            self.auxiliary_head = None
+
+    def get_initial_hidden(
+        self,
+        batch_size: int = 1,
+        device: torch.device | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        """Get zero-initialized hidden state for temporal GRU.
 
         Args:
             batch_size: Batch size
             device: Device to create tensors on
 
         Returns:
-            Tuple of (h_0, c_0) each with shape (num_layers, batch_size, hidden_size)
+            Tuple of (h_marine, h_enemies):
+                - h_marine: (num_layers, B, gru_hidden_size)
+                - h_enemies: (num_layers, B, max_enemies, gru_hidden_size)
         """
         if device is None:
             device = next(self.parameters()).device
 
-        h_0 = torch.zeros(
-            self.config.lstm_num_layers,
-            batch_size,
-            self.config.lstm_hidden_size,
+        return self.temporal_encoder.get_initial_hidden(
+            batch_size=batch_size,
+            num_enemies=self.config.max_enemies,
             device=device,
         )
-        c_0 = torch.zeros(
-            self.config.lstm_num_layers,
-            batch_size,
-            self.config.lstm_hidden_size,
-            device=device,
-        )
-        return (h_0, c_0)
+
+    def _compute_action_mask(
+        self,
+        marine_obs: Tensor,
+        enemy_mask: Tensor,
+        range_mask: Tensor | None = None,
+    ) -> Tensor:
+        """Compute action type mask based on game state.
+
+        Args:
+            marine_obs: Marine observation (B, marine_obs_size)
+                       [hp_norm, cd_binary, cd_norm]
+            enemy_mask: Valid enemy mask (B, N)
+            range_mask: In-range enemy mask (B, N) or None
+
+        Returns:
+            Action mask (B, 3) where True = valid action
+        """
+        # Extract can_attack from marine_obs (cd_binary is index 1, 0 means can attack)
+        can_attack = marine_obs[:, 1] < 0.5  # cd_binary == 0 means weapon ready
+
+        # Check if any enemy is in range
+        if range_mask is not None:
+            has_valid_target = (enemy_mask & range_mask).any(dim=-1)
+        else:
+            # If no range mask provided, assume all alive enemies are targetable
+            has_valid_target = enemy_mask.any(dim=-1)
+
+        # Create action mask
+        return ActionTypeHead.create_action_mask(can_attack, has_valid_target)
 
     def forward(
         self,
         obs: Tensor,
         hidden: tuple[Tensor, Tensor] | None = None,
-        action: Tensor | None = None,
+        action: HybridAction | None = None,
         action_mask: Tensor | None = None,
+        range_mask: Tensor | None = None,
     ) -> ActorCriticOutput:
         """Forward pass for single timestep.
 
         Args:
-            obs: Observations (B, obs_size)
-            hidden: LSTM hidden state tuple (h, c). If None, uses zeros.
-            action: Optional action to evaluate (B,). If None, samples new.
-            action_mask: Optional boolean mask where True = valid action (B, num_actions)
+            obs: Flat observation (B, obs_size)
+            hidden: Temporal hidden state (h_marine, h_enemies). If None, uses zeros.
+            action: Optional action to evaluate. If None, samples new action.
+            action_mask: Optional action type mask (B, 3). If None, computed from obs.
+            range_mask: Optional attack range mask (B, N). If None, uses enemy_mask.
 
         Returns:
-            ActorCriticOutput with action output, value, and new hidden state
+            ActorCriticOutput with action, value, hidden state, etc.
         """
         batch_size = obs.shape[0]
 
@@ -152,119 +210,242 @@ class ActorCritic(nn.Module):
         if hidden is None:
             hidden = self.get_initial_hidden(batch_size, obs.device)
 
-        # Encode observation
-        features = self.encoder(obs)  # (B, embed_size)
+        # === Entity Encoding ===
+        time_left, marine_emb, enemy_embs, enemy_mask = self.entity_encoder(obs)
+        marine_obs = self.entity_encoder.get_marine_obs(obs)
 
-        # Add sequence dimension for LSTM
-        features = features.unsqueeze(1)  # (B, 1, embed_size)
-
-        # LSTM forward
-        lstm_out, new_hidden = self.lstm(features, hidden)  # (B, 1, hidden_size)
-
-        # Remove sequence dimension
-        lstm_out = lstm_out.squeeze(1)  # (B, hidden_size)
-
-        # Action head
-        action_output = self.action_head(
-            features=lstm_out,
-            raw_obs=obs,
-            action=action,
-            mask=action_mask,
+        # === Temporal Encoding ===
+        h_marine, h_enemies, new_hidden = self.temporal_encoder(
+            marine_emb, enemy_embs, hidden, enemy_mask
         )
 
-        # Value head
-        value = self.value_head(features=lstm_out, raw_obs=obs)
+        # === Cross-Attention ===
+        context, attn_weights, attn_logits = self.cross_attention(
+            h_marine, h_enemies, enemy_mask
+        )
+
+        # === Backbone Output ===
+        backbone_out = torch.cat([h_marine, context], dim=-1)
+
+        # === Compute Action Mask ===
+        if action_mask is None:
+            action_mask = self._compute_action_mask(marine_obs, enemy_mask, range_mask)
+
+        # === Action Type Head ===
+        action_type_input = action.action_type if action is not None else None
+        action_type, action_type_log_prob, action_type_entropy, _ = self.action_type_head(
+            features=backbone_out,
+            marine_obs=marine_obs,
+            action_type=action_type_input,
+            action_mask=action_mask,
+        )
+
+        # === Conditional Action Heads ===
+        # Move direction (only for MOVE actions)
+        is_move = action_type == ACTION_MOVE
+        move_direction_input = action.move_direction if action is not None else None
+        move_direction, move_log_prob, move_entropy, _ = self.move_direction_head(
+            features=backbone_out,
+            marine_obs=marine_obs,
+            direction=move_direction_input,
+        )
+
+        # Attack target (only for ATTACK actions)
+        is_attack = action_type == ACTION_ATTACK
+        attack_target_input = action.attack_target if action is not None else None
+
+        # Use range_mask for attack targeting if provided
+        target_range_mask = range_mask if range_mask is not None else enemy_mask
+        attack_target, attack_log_prob, attack_entropy, _ = self.attack_target_head(
+            attn_logits=attn_logits,
+            enemy_mask=enemy_mask,
+            range_mask=target_range_mask,
+            attack_target=attack_target_input,
+        )
+
+        # === Combine Log Probs and Entropy ===
+        # Only include conditional log probs for the selected action type
+        combined_log_prob = action_type_log_prob.clone()
+        combined_entropy = action_type_entropy.clone()
+
+        # Add move direction log prob for MOVE actions
+        combined_log_prob = torch.where(
+            is_move,
+            combined_log_prob + move_log_prob,
+            combined_log_prob,
+        )
+        combined_entropy = torch.where(
+            is_move,
+            combined_entropy + move_entropy,
+            combined_entropy,
+        )
+
+        # Add attack target log prob for ATTACK actions
+        combined_log_prob = torch.where(
+            is_attack,
+            combined_log_prob + attack_log_prob,
+            combined_log_prob,
+        )
+        combined_entropy = torch.where(
+            is_attack,
+            combined_entropy + attack_entropy,
+            combined_entropy,
+        )
+
+        # === Value Head ===
+        value = self.value_head(features=backbone_out, marine_obs=marine_obs)
+
+        # === Auxiliary Heads ===
+        aux_damage = None
+        aux_distance = None
+        if self.auxiliary_head is not None:
+            aux_preds = self.auxiliary_head(features=backbone_out, marine_obs=marine_obs)
+            aux_damage = aux_preds["damage"]
+            aux_distance = aux_preds["distance"]
+
+        # === Construct Output ===
+        hybrid_action = HybridAction(
+            action_type=action_type,
+            move_direction=move_direction,
+            attack_target=attack_target,
+        )
 
         return ActorCriticOutput(
-            action=action_output,
+            action=hybrid_action,
+            log_prob=combined_log_prob,
+            entropy=combined_entropy,
             value=value,
             hidden=new_hidden,
+            attn_weights=attn_weights,
+            action_type_log_prob=action_type_log_prob,
+            move_direction_log_prob=move_log_prob if is_move.any() else None,
+            attack_target_log_prob=attack_log_prob if is_attack.any() else None,
+            aux_damage=aux_damage,
+            aux_distance=aux_distance,
         )
 
     def forward_sequence(
         self,
         obs_seq: Tensor,
         hidden: tuple[Tensor, Tensor] | None = None,
-        actions: Tensor | None = None,
+        actions: dict[str, Tensor] | None = None,
         action_masks: Tensor | None = None,
+        range_masks: Tensor | None = None,
     ) -> ActorCriticOutput:
-        """Forward pass for a sequence of observations (e.g., full episode).
+        """Forward pass for a sequence of observations.
 
-        This is more efficient than calling forward() in a loop because
-        it processes the entire sequence through the LSTM at once.
+        More efficient than step-by-step for training on complete episodes.
 
         Args:
             obs_seq: Observation sequence (B, T, obs_size)
-            hidden: Initial LSTM hidden state. If None, uses zeros.
-            actions: Optional actions to evaluate (B, T). If None, samples new.
-            action_masks: Optional masks (B, T, num_actions)
+            hidden: Initial hidden state. If None, uses zeros.
+            actions: Optional dict with:
+                - "action_type": (B, T)
+                - "move_direction": (B, T, 2)
+                - "attack_target": (B, T)
+            action_masks: Optional action masks (B, T, 3)
+            range_masks: Optional range masks (B, T, N)
 
         Returns:
-            ActorCriticOutput with:
-                - action.action: (B, T)
-                - action.log_prob: (B, T)
-                - action.entropy: (B, T)
-                - value: (B, T)
-                - hidden: final hidden state
+            ActorCriticOutput with sequence outputs (B, T, ...)
         """
         batch_size, seq_len, _ = obs_seq.shape
 
-        # Initialize hidden state if not provided
+        # Initialize hidden state
         if hidden is None:
             hidden = self.get_initial_hidden(batch_size, obs_seq.device)
 
-        # Encode all observations
-        obs_flat = obs_seq.view(batch_size * seq_len, -1)  # (B*T, obs_size)
-        features_flat = self.encoder(obs_flat)  # (B*T, embed_size)
-        features = features_flat.view(batch_size, seq_len, -1)  # (B, T, embed_size)
+        # Process step by step (could be optimized with sequence GRU later)
+        outputs = []
+        current_hidden = hidden
 
-        # LSTM forward through entire sequence
-        lstm_out, new_hidden = self.lstm(features, hidden)  # (B, T, hidden_size)
+        for t in range(seq_len):
+            obs_t = obs_seq[:, t]
 
-        # Flatten for heads
-        lstm_out_flat = lstm_out.reshape(batch_size * seq_len, -1)  # (B*T, hidden_size)
-        obs_flat = obs_seq.reshape(batch_size * seq_len, -1)  # (B*T, obs_size)
+            # Get action for this timestep if provided
+            action_t = None
+            if actions is not None:
+                action_t = HybridAction(
+                    action_type=actions["action_type"][:, t],
+                    move_direction=actions["move_direction"][:, t],
+                    attack_target=actions["attack_target"][:, t],
+                )
 
-        # Prepare actions and masks
-        actions_flat = None
-        if actions is not None:
-            actions_flat = actions.reshape(batch_size * seq_len)  # (B*T,)
+            action_mask_t = action_masks[:, t] if action_masks is not None else None
+            range_mask_t = range_masks[:, t] if range_masks is not None else None
 
-        masks_flat = None
-        if action_masks is not None:
-            masks_flat = action_masks.reshape(batch_size * seq_len, -1)  # (B*T, num_actions)
+            output_t = self.forward(
+                obs=obs_t,
+                hidden=current_hidden,
+                action=action_t,
+                action_mask=action_mask_t,
+                range_mask=range_mask_t,
+            )
 
-        # Action head
-        action_output = self.action_head(
-            features=lstm_out_flat,
-            raw_obs=obs_flat,
-            action=actions_flat,
-            mask=masks_flat,
-        )
+            outputs.append(output_t)
+            current_hidden = output_t.hidden
 
-        # Value head
-        values_flat = self.value_head(features=lstm_out_flat, raw_obs=obs_flat)
+        # Stack outputs
+        return self._stack_outputs(outputs, current_hidden)
 
-        # Reshape outputs back to (B, T)
-        action_out_reshaped = HeadOutput(
-            action=action_output.action.view(batch_size, seq_len),
-            log_prob=action_output.log_prob.view(batch_size, seq_len),
-            entropy=action_output.entropy.view(batch_size, seq_len),
-            distribution=None,  # Can't easily reshape distribution
-        )
+    def _stack_outputs(
+        self,
+        outputs: list[ActorCriticOutput],
+        final_hidden: tuple[Tensor, Tensor],
+    ) -> ActorCriticOutput:
+        """Stack list of single-step outputs into sequence output."""
+        # Stack action components
+        action_type = torch.stack([o.action.action_type for o in outputs], dim=1)
+        move_direction = torch.stack([o.action.move_direction for o in outputs], dim=1)
+        attack_target = torch.stack([o.action.attack_target for o in outputs], dim=1)
+
+        # Stack other outputs
+        log_prob = torch.stack([o.log_prob for o in outputs], dim=1)
+        entropy = torch.stack([o.entropy for o in outputs], dim=1)
+        value = torch.stack([o.value for o in outputs], dim=1)
+        attn_weights = torch.stack([o.attn_weights for o in outputs], dim=1)
+
+        action_type_log_prob = torch.stack([o.action_type_log_prob for o in outputs], dim=1)
+
+        # Handle optional fields - filter out None values before stacking
+        aux_damage = None
+        aux_distance = None
+        if outputs[0].aux_damage is not None:
+            aux_damage_list = [o.aux_damage for o in outputs if o.aux_damage is not None]
+            aux_distance_list = [o.aux_distance for o in outputs if o.aux_distance is not None]
+            if aux_damage_list:
+                aux_damage = torch.stack(aux_damage_list, dim=1)
+            if aux_distance_list:
+                aux_distance = torch.stack(aux_distance_list, dim=1)
 
         return ActorCriticOutput(
-            action=action_out_reshaped,
-            value=values_flat.view(batch_size, seq_len),
-            hidden=new_hidden,
+            action=HybridAction(
+                action_type=action_type,
+                move_direction=move_direction,
+                attack_target=attack_target,
+            ),
+            log_prob=log_prob,
+            entropy=entropy,
+            value=value,
+            hidden=final_hidden,
+            attn_weights=attn_weights,
+            action_type_log_prob=action_type_log_prob,
+            move_direction_log_prob=None,  # Complex to stack due to masking
+            attack_target_log_prob=None,
+            aux_damage=aux_damage,
+            aux_distance=aux_distance,
         )
 
-    def get_value(self, obs: Tensor, hidden: tuple[Tensor, Tensor] | None = None) -> Tensor:
-        """Get value estimate only.
+    def get_value(
+        self,
+        obs: Tensor,
+        hidden: tuple[Tensor, Tensor] | None = None,
+    ) -> Tensor:
+        """Get value estimate only (for bootstrapping).
 
         Args:
             obs: Observations (B, obs_size)
-            hidden: LSTM hidden state. If None, uses zeros.
+            hidden: Hidden state. If None, uses zeros.
 
         Returns:
             Value estimates (B,)
@@ -277,79 +458,216 @@ class ActorCritic(nn.Module):
         obs: Tensor,
         hidden: tuple[Tensor, Tensor] | None = None,
         action_mask: Tensor | None = None,
-    ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
-        """Get deterministic action (argmax) for evaluation.
+        range_mask: Tensor | None = None,
+    ) -> tuple[HybridAction, tuple[Tensor, Tensor]]:
+        """Get deterministic action (argmax/mean) for evaluation.
 
         Args:
             obs: Observations (B, obs_size)
-            hidden: LSTM hidden state. If None, uses zeros.
-            action_mask: Optional boolean mask where True = valid action
+            hidden: Hidden state. If None, uses zeros.
+            action_mask: Optional action type mask (B, 3)
+            range_mask: Optional range mask (B, N)
 
         Returns:
-            Tuple of:
-            - action: (B,) discrete action indices
-            - new_hidden: updated LSTM hidden state
+            Tuple of (HybridAction, new_hidden)
         """
         batch_size = obs.shape[0]
 
         if hidden is None:
             hidden = self.get_initial_hidden(batch_size, obs.device)
 
-        # Encode and LSTM
-        features = self.encoder(obs).unsqueeze(1)
-        lstm_out, new_hidden = self.lstm(features, hidden)
-        lstm_out = lstm_out.squeeze(1)
+        # Encode
+        time_left, marine_emb, enemy_embs, enemy_mask = self.entity_encoder(obs)
+        marine_obs = self.entity_encoder.get_marine_obs(obs)
 
-        # Deterministic action
-        action = self.action_head.get_deterministic_action(
-            features=lstm_out,
-            raw_obs=obs,
-            mask=action_mask,
+        # Temporal
+        h_marine, h_enemies, new_hidden = self.temporal_encoder(
+            marine_emb, enemy_embs, hidden, enemy_mask
         )
 
-        return action, new_hidden
+        # Attention
+        context, attn_weights, attn_logits = self.cross_attention(
+            h_marine, h_enemies, enemy_mask
+        )
+
+        # Backbone
+        backbone_out = torch.cat([h_marine, context], dim=-1)
+
+        # Action mask
+        if action_mask is None:
+            action_mask = self._compute_action_mask(marine_obs, enemy_mask, range_mask)
+
+        # Deterministic action type
+        action_type = self.action_type_head.get_deterministic_action(
+            features=backbone_out,
+            marine_obs=marine_obs,
+            action_mask=action_mask,
+        )
+
+        # Deterministic move direction
+        move_direction = self.move_direction_head.get_deterministic_action(
+            features=backbone_out,
+            marine_obs=marine_obs,
+        )
+
+        # Deterministic attack target
+        target_range_mask = range_mask if range_mask is not None else enemy_mask
+        attack_target = self.attack_target_head.get_deterministic_action(
+            attn_logits=attn_logits,
+            enemy_mask=enemy_mask,
+            range_mask=target_range_mask,
+        )
+
+        hybrid_action = HybridAction(
+            action_type=action_type,
+            move_direction=move_direction,
+            attack_target=attack_target,
+        )
+
+        return hybrid_action, new_hidden
 
     def compute_losses(
         self,
         output: ActorCriticOutput,
-        old_log_prob: Tensor,
+        old_log_probs: dict[str, Tensor],
         advantages: Tensor,
-        vtrace_targets: Tensor,
+        value_targets: Tensor,
         clip_epsilon: float,
+        aux_targets: dict[str, Tensor] | None = None,
     ) -> dict[str, HeadLoss]:
-        """Compute losses for all heads.
+        """Compute all losses for training.
 
         Args:
-            output: Forward pass output (with flattened tensors)
-            old_log_prob: Behavior policy log probs (B*T,) or (N,)
-            advantages: Advantage estimates (B*T,) or (N,)
-            vtrace_targets: V-trace value targets (B*T,) or (N,)
+            output: Forward pass output
+            old_log_probs: Dict with:
+                - "combined": Combined log probs from behavior policy (B, T) or (N,)
+                - "action_type": Action type log probs (B, T) or (N,)
+                - "move_direction": Move direction log probs (B, T) or (N,)
+                - "attack_target": Attack target log probs (B, T) or (N,)
+            advantages: Advantage estimates (B, T) or (N,)
+            value_targets: Value targets (B, T) or (N,)
             clip_epsilon: PPO clipping parameter
+            aux_targets: Optional dict with auxiliary targets
 
         Returns:
-            Dictionary of HeadLoss for each head
+            Dict of HeadLoss for each component
         """
-        # Flatten output tensors if they have sequence dimension
-        new_log_prob = output.action.log_prob
-        values = output.value
+        # Flatten if needed
+        action_type = output.action.action_type
+        if action_type.dim() > 1:
+            action_type = action_type.reshape(-1)
+            action_type_log_prob = output.action_type_log_prob.reshape(-1)
+            value = output.value.reshape(-1)
+            advantages = advantages.reshape(-1)
+            value_targets = value_targets.reshape(-1)
+        else:
+            action_type_log_prob = output.action_type_log_prob
+            value = output.value
 
-        if new_log_prob.dim() > 1:
-            new_log_prob = new_log_prob.reshape(-1)
-            values = values.reshape(-1)
+        # Create action type masks
+        is_move = action_type == ACTION_MOVE
+        is_attack = action_type == ACTION_ATTACK
 
-        action_loss = self.action_head.compute_loss(
-            new_log_prob=new_log_prob,
-            old_log_prob=old_log_prob,
+        losses = {}
+
+        # === Action Type Loss ===
+        losses["action_type"] = self.action_type_head.compute_loss(
+            new_log_prob=action_type_log_prob,
+            old_log_prob=old_log_probs["action_type"].reshape(-1),
             advantages=advantages,
             clip_epsilon=clip_epsilon,
         )
 
-        value_loss = self.value_head.compute_loss(
-            values=values,
-            targets=vtrace_targets,
+        # === Move Direction Loss (masked to MOVE actions) ===
+        if is_move.any() and "move_direction" in old_log_probs:
+            # Need to get move direction log prob from output
+            # For now, use the stored one or recompute
+            move_log_prob = old_log_probs.get("move_direction_new", output.log_prob - output.action_type_log_prob)
+            if hasattr(move_log_prob, 'reshape'):
+                move_log_prob = move_log_prob.reshape(-1)
+
+            losses["move_direction"] = self.move_direction_head.compute_loss(
+                new_log_prob=move_log_prob,
+                old_log_prob=old_log_probs["move_direction"].reshape(-1),
+                advantages=advantages,
+                clip_epsilon=clip_epsilon,
+                mask=is_move,
+            )
+        else:
+            losses["move_direction"] = HeadLoss(
+                loss=torch.tensor(0.0, device=value.device),
+                metrics={"loss": 0.0, "num_move_actions": 0},
+            )
+
+        # === Attack Target Loss (masked to ATTACK actions) ===
+        if is_attack.any() and "attack_target" in old_log_probs:
+            attack_log_prob = old_log_probs.get("attack_target_new", output.log_prob - output.action_type_log_prob)
+            if hasattr(attack_log_prob, 'reshape'):
+                attack_log_prob = attack_log_prob.reshape(-1)
+
+            losses["attack_target"] = self.attack_target_head.compute_loss(
+                new_log_prob=attack_log_prob,
+                old_log_prob=old_log_probs["attack_target"].reshape(-1),
+                advantages=advantages,
+                clip_epsilon=clip_epsilon,
+                mask=is_attack,
+            )
+        else:
+            losses["attack_target"] = HeadLoss(
+                loss=torch.tensor(0.0, device=value.device),
+                metrics={"loss": 0.0, "num_attack_actions": 0},
+            )
+
+        # === Value Loss ===
+        losses["value"] = self.value_head.compute_loss(
+            values=value,
+            targets=value_targets,
         )
 
-        return {
-            "action": action_loss,
-            "value": value_loss,
-        }
+        # === Auxiliary Losses ===
+        if self.auxiliary_head is not None and aux_targets is not None:
+            if output.aux_damage is not None and output.aux_distance is not None:
+                aux_preds: dict[str, Tensor] = {
+                    "damage": output.aux_damage.reshape(-1),
+                    "distance": output.aux_distance.reshape(-1),
+                }
+                losses["auxiliary"] = self.auxiliary_head.compute_loss(
+                    predictions=aux_preds,
+                    targets={k: v.reshape(-1) for k, v in aux_targets.items()},
+                )
+
+        return losses
+
+    def to_env_action(self, action: HybridAction, batch_idx: int = 0) -> dict:
+        """Convert HybridAction to environment action format.
+
+        Args:
+            action: HybridAction from model output
+            batch_idx: Index in batch to extract
+
+        Returns:
+            Dict with "command" and "angle" for environment
+        """
+        action_type = action.action_type[batch_idx].item()
+        move_direction = action.move_direction[batch_idx]
+        attack_target = action.attack_target[batch_idx].item()
+
+        # Detach tensor before converting to numpy
+        angle = move_direction.detach().cpu().numpy()
+
+        if action_type == ACTION_MOVE:
+            return {
+                "command": ACTION_MOVE,
+                "angle": angle,
+            }
+        elif action_type == ACTION_ATTACK:
+            # Map attack_target (0 or 1) to command (1 or 2)
+            return {
+                "command": 1 + attack_target,  # ATTACK_Z1=1, ATTACK_Z2=2
+                "angle": angle,  # Not used but required
+            }
+        else:  # STOP
+            return {
+                "command": ACTION_STOP,
+                "angle": angle,  # Not used but required
+            }

@@ -9,12 +9,13 @@ Temporal hint: loose episodes provides a slight signal about full task progress,
 
 Zerglins spawn positions are
 1. In the range of sight: < 8. Attack command will lead to move-and-attack
-2. Out of the range of sight: > 12. Attack command will do nothing.
+2. Out of the range of sight: > 12. Attack command will do nothing, should ddo some moe ahead before
+3. The only one way to win in a fight is fire-kite strategy, with attacs only marine died with 1 enemy killed and second one has half of hit points
 
-This gives ability to split the task into:
-1. Learn to kite if nearby
-2. Learn to chase if far away
-3. Combine to solve the full task
+The full task might be splitted into the next parts:
+1. Learn to chase if far away
+2. Learn to kite if nearby
+3. Combine both properly to solve the full task in a ~100 environment steps
 
 Notes:
 - Since in this particular env\problem we are able to provide better intermidiate rewards, we will not in more complex scenarios. Our aim is not to solve concrete problem, but find a way to learn a model which might learn to solve complex scenarious on their own with a win/lose final signal and DPS signal during gameplay. Agent should be able to realise what muktiple DPS signals (e.g. burst in one case vs sustained damage in another) leads to the win avoiding local optimas.
