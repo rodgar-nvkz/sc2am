@@ -160,7 +160,6 @@ def train(
             compiled_model.train()
             total_loss = 0.0
             total_entropy = 0.0
-            total_metrics: dict[str, float] = {}
 
             for _ in range(config.num_epochs):
                 # Forward pass through model
@@ -201,12 +200,6 @@ def train(
 
                 total_loss += loss.item()
                 total_entropy += entropy.item()
-
-                # Accumulate metrics
-                for name, head_loss in losses.items():
-                    for metric_name, metric_value in head_loss.metrics.items():
-                        key = f"{name}_{metric_name}"
-                        total_metrics[key] = total_metrics.get(key, 0.0) + metric_value
 
             update_count += 1
             lr_scheduler.step()

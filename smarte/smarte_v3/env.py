@@ -273,8 +273,7 @@ class SC2GymEnv(gym.Env):
             ally_health = sum([u.health / u.health_max for u in self.units[1]], 0.0) / 1.0
             enemy_max_health = ZERGLING_MAX_HP * 2
             enemy_health_left = sum([u.health for u in self.units[2]], 0.0)
-            diff = 1 + ally_health - (enemy_health_left / enemy_max_health)
-            return diff
+            return ally_health - (enemy_health_left / enemy_max_health)
 
         return 0
 

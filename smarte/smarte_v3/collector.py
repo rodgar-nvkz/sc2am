@@ -17,7 +17,7 @@ from loguru import logger
 from .config import IMPALAConfig
 from .env import SC2GymEnv
 from .interop import SharedWeights
-from .model import ActorCritic
+from .model import ActorCritic, compute_gae_episode
 
 
 @dataclass
@@ -105,9 +105,13 @@ class EpisodeBatch:
             behavior_values[offset:end] = ep.behavior_values
             action_masks[offset:end] = ep.action_masks
 
-            # Compute V-trace for this episode (terminal state, bootstrap = 0)
-            ep_vtrace, ep_adv = compute_vtrace_episode(
-                rewards=ep.rewards, values=ep.behavior_values, gamma=config.gamma
+            # Compute GAE for this episode (terminal state, bootstrap = 0)
+            # Not a Vtrace: near on-policy assumption. Avg staleness < 3.
+            ep_vtrace, ep_adv = compute_gae_episode(
+                rewards=ep.rewards,
+                values=ep.behavior_values,
+                gamma=config.gamma,
+                gae_lambda=config.gae_lambda,
             )
             vtrace_targets[offset:end] = ep_vtrace
             advantages[offset:end] = ep_adv
@@ -145,29 +149,6 @@ class EpisodeBatch:
             "vtrace_targets": torch.from_numpy(self.vtrace_targets).to(device),
             "advantages": torch.from_numpy(self.advantages).to(device),
         }
-
-
-def compute_vtrace_episode(
-    rewards: np.ndarray, values: np.ndarray, gamma: float = 0.99
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Compute V-trace targets and advantages for a single complete episode.
-
-    Since episode is complete (terminal state), bootstrap value = 0.
-    Simplified version without importance sampling (on-policy assumption). Avg staleness < 3.
-    """
-    T = len(rewards)
-
-    next_value = 0.0  # Always starts from Terminal state
-    advantages = np.zeros(T, dtype=np.float32)
-    vtrace_targets = np.zeros(T, dtype=np.float32)
-
-    for t in reversed(range(T)):
-        vtrace_targets[t] = rewards[t] + gamma * next_value
-        advantages[t] = vtrace_targets[t] - values[t]
-        next_value = vtrace_targets[t]
-
-    return vtrace_targets, advantages
 
 
 def collector_worker(

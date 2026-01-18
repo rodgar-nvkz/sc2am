@@ -30,6 +30,7 @@ Example:
 
 from .actor_critic import ActorCritic, ActorCriticOutput
 from .config import ModelConfig
+from .gae import compute_gae_episode
 from .heads import (
     ActionHead,
     AngleHead,
@@ -45,6 +46,8 @@ __all__ = [
     "ActorCriticOutput",
     # Config
     "ModelConfig",
+    # GAE
+    "compute_gae_episode",
     # Heads
     "ActionHead",
     "AngleHead",
