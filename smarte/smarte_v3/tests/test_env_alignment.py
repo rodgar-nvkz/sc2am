@@ -12,24 +12,22 @@ import numpy as np
 import pytest
 import torch
 
-from smarte.smarte_v3.env import (
-    ACTION_ATTACK_Z1,
-    ACTION_ATTACK_Z2,
-    ACTION_MOVE,
-    NUM_COMMANDS,
-    OBS_SIZE,
-)
+from smarte.smarte_v3.env import SC2GymEnv
 from smarte.smarte_v3.model.actor_critic import ActorCritic
 from smarte.smarte_v3.model.config import ModelConfig
+
+# Import constants from environment class
+ACTION_MOVE = SC2GymEnv.ACTION_MOVE
+ACTION_ATTACK_Z1 = SC2GymEnv.ACTION_ATTACK_Z1
+ACTION_ATTACK_Z2 = SC2GymEnv.ACTION_ATTACK_Z2
+NUM_COMMANDS = SC2GymEnv.NUM_COMMANDS
+OBS_SIZE = SC2GymEnv.OBS_SIZE
 
 
 @pytest.fixture
 def config() -> ModelConfig:
     """Create config matching environment specs."""
-    return ModelConfig(
-        obs_size=OBS_SIZE,
-        num_commands=NUM_COMMANDS,
-    )
+    return ModelConfig(obs_size=OBS_SIZE, num_commands=NUM_COMMANDS, move_action_id=ACTION_MOVE)
 
 
 @pytest.fixture

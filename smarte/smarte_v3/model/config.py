@@ -18,10 +18,11 @@ class ModelConfig:
     """
 
     # Observation space
-    obs_size: int = 11  # 10 original + 1 step counter
+    obs_size: int
 
     # Action space
-    num_commands: int = 3  # MOVE, ATTACK_Z1, ATTACK_Z2
+    num_commands: int
+    move_action_id: int  # For angle head masking
 
     # Head settings
     head_hidden_size: int = 32

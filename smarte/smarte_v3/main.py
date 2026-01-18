@@ -41,31 +41,21 @@ from loguru import logger
 
 from .collector import EpisodeBatch, collector_worker
 from .config import IMPALAConfig
-from .env import ACTION_MOVE, NUM_COMMANDS, OBS_SIZE
+from .env import SC2GymEnv
 from .eval import eval_model
 from .interop import SharedWeights
-from .model import ActorCritic
+from .model import ActorCritic, ModelConfig
 
 
-def train(
-    total_episodes: int,
-    num_workers: int,
-    seed: int = 42,
-    resume: str | None = None,
-    compile_model: bool = True,
-):
+def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | None = None):
     """Main training loop with batched GPU processing."""
-    # === CRITICAL PERFORMANCE SETTINGS ===
-    # Set environment variables BEFORE spawning workers (they inherit these)
-    # This prevents CPU oversubscription when running multiple workers
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-    os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
-    # Also set for PyTorch in main process (workers will set their own)
-    # Main process can use more threads since it's doing GPU work mostly
+    # Main process can use more threads since it's doing GPU work mostly (workers will set their own)
     torch.set_num_threads(2)
     torch.set_num_interop_threads(2)
 
@@ -77,19 +67,27 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    config = IMPALAConfig(total_episodes=total_episodes, num_workers=num_workers, upgrade_levels=[1])
-    config.model.obs_size = OBS_SIZE
-    config.model.num_commands = NUM_COMMANDS
+    # Initialize model config from environment class constants (required, no defaults)
+    model_config = ModelConfig(
+        obs_size=SC2GymEnv.OBS_SIZE,
+        num_commands=SC2GymEnv.NUM_COMMANDS,
+        move_action_id=SC2GymEnv.MOVE_ACTION_ID,
+    )
+    config = IMPALAConfig(
+        model=model_config,
+        total_episodes=total_episodes,
+        num_workers=num_workers,
+        upgrade_levels=[1],
+    )
 
     model = ActorCritic(config.model).to(device)
-    compiled_model: Any = model  # For type checker compatibility with torch.compile
 
     if resume:
         print(f"Resuming from checkpoint: {resume}")
         checkpoint = torch.load(resume, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model_state_dict"])
 
-    compiled_model = torch.compile(model, mode="default", fullgraph=False)
+    compiled_model: Any = torch.compile(model, mode="default", fullgraph=False)
 
     episode_queue = Queue(maxsize=num_workers * 2)
     shared_weights = SharedWeights(model)
@@ -154,7 +152,7 @@ def train(
             advantages = advantages / (advantages.std() + 1e-8)
 
             # Precompute move mask for angle loss
-            move_mask = (tensors["commands"] == ACTION_MOVE).float()
+            move_mask = (tensors["commands"] == config.model.move_action_id).float()
 
             # === Training loop: multiple epochs over the batch ===
             compiled_model.train()

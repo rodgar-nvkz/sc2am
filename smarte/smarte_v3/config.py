@@ -8,7 +8,7 @@ class IMPALAConfig:
     """IMPALA training configuration - simplified for 1 game = 1 episode."""
 
     # Model configuration
-    model: ModelConfig = dataclasses.field(default_factory=ModelConfig)
+    model: ModelConfig
 
     # Batch settings
     num_workers: int = 8
@@ -20,7 +20,7 @@ class IMPALAConfig:
 
     # V-trace / GAE parameters
     gamma: float = 0.99
-    gae_lambda: float = 0.975  # GAE λ for variance reduction (0=TD(0), 1=MC)
+    gae_lambda: float = 0.99  # GAE λ for variance reduction (0=TD(0), 1=MC)
     c_bar: float = 1.0  # Truncation for trace coefficients
     rho_bar: float = 1.0  # Truncation for importance weights
 

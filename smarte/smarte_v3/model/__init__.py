@@ -13,16 +13,22 @@ Components:
 - actor_critic: Main ActorCritic model composing all components
 
 Example:
+    from smarte.smarte_v3.env import SC2GymEnv
     from smarte.smarte_v3.model import ActorCritic, ModelConfig
 
-    config = ModelConfig(obs_size=11, num_commands=3)
+    # Initialize config from environment class constants
+    config = ModelConfig(
+        obs_size=SC2GymEnv.OBS_SIZE,
+        num_commands=SC2GymEnv.NUM_COMMANDS,
+        move_action_id=SC2GymEnv.MOVE_ACTION_ID,
+    )
     model = ActorCritic(config)
 
     # action_mask is REQUIRED (use torch.ones for "all valid" if needed)
     output = model(obs, action_mask=mask)
 
-    # move_mask is REQUIRED for training
-    move_mask = (commands == MOVE).float()
+    # move_mask is REQUIRED for training (use config.move_action_id)
+    move_mask = (commands == config.move_action_id).float()
     entropy = output.total_entropy(move_mask)
 
     losses = model.compute_losses(output, old_log_probs, advantages, ...)

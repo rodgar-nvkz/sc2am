@@ -3,11 +3,14 @@ Marine vs 2 Zerglings RL Environment
 
 A Gymnasium environment for training a Marine agent against 2 scripted Zerglings.
 Uses vector observations and hybrid action space:
-- Discrete commands: STAY, MOVE, ATTACK_Z1, ATTACK_Z2
+- Discrete commands: MOVE, ATTACK_Z1, ATTACK_Z2
 - Continuous angle (sin, cos) for MOVE command in world-space polar coords
 
 The observation and action spaces use a relative reference frame based on the
 direction to the closest enemy, enabling rotation-invariant learning.
+
+All observation and action space constants are defined as class-level attributes
+in SC2GymEnv, allowing easy propagation to model/training code.
 """
 
 import math
@@ -34,19 +37,8 @@ UNIT_ZERGLING = 105
 
 # Unit stats (for normalization)
 MARINE_MAX_HP = 45.0
-MARINE_RANGE = 5.0
-MARINGE_SIGHT = 9.0
-MARINE_SPEED = 3.15
-
 ZERGLING_MAX_HP = 35.0
-ZERGLING_RANGE = 0.1  # Melee
-ZERGLING_SPEED = 4.13
-
-# Discrete commands
-ACTION_MOVE = 0
-ACTION_ATTACK_Z1 = 1
-ACTION_ATTACK_Z2 = 2
-NUM_COMMANDS = 3
+MARINGE_SIGHT = 9.0
 
 # Movement step size (how far to move per action)
 MOVE_STEP_SIZE = 2.0
@@ -62,13 +54,6 @@ MAX_SPAWN_DISTANCE = 12.0
 
 # Number of zerglings
 NUM_ZERGLINGS = 2
-
-# Observation space size:
-# Time: time_remaining (1) = 1
-# Marine: own_health (1), weapon_cooldown (1), weapon_cooldown_norm (1) = 3
-# Per zergling (x2): distance (1), health (1), angle_sin (1), angle_cos (1) = 4
-# Total: 1 + 3 + 4*2 = 12
-OBS_SIZE = 12
 
 
 @dataclass
@@ -110,14 +95,25 @@ class SC2GymEnv(gym.Env):
     """1 Marine vs 2 Zerglings environment with hybrid action space.
 
     Action space is a Dict with:
-    - 'command': Discrete(4) - STAY, MOVE, ATTACK_Z1, ATTACK_Z2
-    - 'angle': Box(2) - (sin, cos) of movement direction relative to reference
-
-    The reference direction is the direction to the closest zergling (or world north if none).
-    This makes the action space rotation-invariant.
+    - 'command': Discrete(3) - MOVE, ATTACK_Z1, ATTACK_Z2
+    - 'angle': Box(2) - (sin, cos) of movement direction
     """
 
     metadata = {"name": "sc2_mv2z_v2_hybrid", "render_modes": []}
+
+    # === Action Space Constants ===
+    ACTION_MOVE = 0
+    ACTION_ATTACK_Z1 = 1
+    ACTION_ATTACK_Z2 = 2
+    NUM_COMMANDS = 3
+    MOVE_ACTION_ID = ACTION_MOVE
+
+    # === Observation Space Constants ===
+    # Time: time_remaining (1) = 1
+    # Marine: own_health (1), weapon_cooldown (1), weapon_cooldown_norm (1) = 3
+    # Per zergling (x2): health (1), angle_sin (1), angle_cos (1), distance (1) = 4
+    # Total: 1 + 3 + 4*2 = 12
+    OBS_SIZE = 12
 
     def __init__(self, params=None) -> None:
         super().__init__()
@@ -126,11 +122,11 @@ class SC2GymEnv(gym.Env):
         # Hybrid action space: discrete command + continuous angle
         self.action_space = spaces.Dict(
             {
-                "command": spaces.Discrete(NUM_COMMANDS),
+                "command": spaces.Discrete(self.NUM_COMMANDS),
                 "angle": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),  # sin, cos
             }
         )
-        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(OBS_SIZE,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(self.OBS_SIZE,), dtype=np.float32)
 
         self.game = SC2SingleGame([Terran, Zerg]).launch()
         self.client = self.game.clients[0]
@@ -140,7 +136,6 @@ class SC2GymEnv(gym.Env):
 
         self.upgrade_level = random.choice(self.params.get("upgrade_level", [0, 1, 2]))
         self.game_steps_per_env = self.params.get("game_steps_per_env", 2)
-        self.hp_multiplier = 1
         self.init_game()
 
     def init_game(self) -> None:
@@ -180,16 +175,12 @@ class SC2GymEnv(gym.Env):
         marine_y = random.uniform(SPAWN_AREA_MIN, SPAWN_AREA_MAX)
         self.client.spawn_units(UNIT_MARINE, (marine_x, marine_y), owner=1, quantity=1)
 
-        # Spawn first zergling at random distance/angle from marine
+        # Spawn 2 zergling nearby at random distance/angle from marine
         spawn_distance = random.uniform(MIN_SPAWN_DISTANCE, MAX_SPAWN_DISTANCE)
         spawn_angle = random.uniform(0, 2 * math.pi)
         ling_x = marine_x + spawn_distance * math.cos(spawn_angle)
         ling_y = marine_y + spawn_distance * math.sin(spawn_angle)
-        # Spawn 2 zergling nearby
         self.client.spawn_units(UNIT_ZERGLING, (ling_x, ling_y), owner=2, quantity=2)
-        # shift_x = random.randint(-2500, 2500) / 1000.0
-        # shift_y = random.randint(-2500, 2500) / 1000.0
-        # self.client.spawn_units(UNIT_ZERGLING, (ling_x + shift_x, ling_y + shift_y), owner=2, quantity=1)
 
         self.game.step(count=2)  # unit spawn takes two frames
 
@@ -197,23 +188,12 @@ class SC2GymEnv(gym.Env):
         assert len(self.units[1]) == 1, "Marine not spawned correctly"
         assert len(self.units[2]) == 2, f"Expected 2 Zerglings, got {len(self.units[2])}"
 
-        # Set marine gandicap
-        marine = self.units[1][0]
-        if self.hp_multiplier != 1.0:
-            self.client.set_unit_life(marine.tag, marine.health_max * self.hp_multiplier)
-
         # Command zerglings to attack marine
         # for zergling in self.units[2]:
         #     self.client.unit_attack_unit(zergling.tag, marine.tag)
 
-        logger.debug(f"Spawned Marine and 2 Zerglings (HP multiplier: {self.hp_multiplier})")
-
     def _get_zergling_obs(self, marine: UnitState, zergling: UnitState | None) -> list[float]:
-        """Get observation features for a single zergling relative to marine.
-
-        Returns [health, sin(relative_angle), cos(relative_angle), distance]
-        All angles are relative to the reference direction.
-        """
+        """Get observation features for a single zergling relative to marine"""
         if zergling is None:
             return [0.0, 0.0, 0.0, 0.0]
 
@@ -231,7 +211,7 @@ class SC2GymEnv(gym.Env):
 
     def _compute_observation(self) -> np.ndarray:
         if not self.units[1]:
-            return np.zeros(OBS_SIZE, dtype=np.float32)
+            return np.zeros(self.OBS_SIZE, dtype=np.float32)
 
         marine = self.units[1][0]
         zerglings = self.units[2]
@@ -285,7 +265,7 @@ class SC2GymEnv(gym.Env):
         marine = self.units[1][0]
         zerglings = self.units[2]
 
-        if command == ACTION_MOVE:
+        if command == self.ACTION_MOVE:
             # Normalize angle to unit circle (model outputs raw values for correct gradients)
             raw_dy, raw_dx = angle_sincos
             magnitude = math.sqrt(raw_dx**2 + raw_dy**2)
@@ -294,10 +274,10 @@ class SC2GymEnv(gym.Env):
             target_y = marine.y + dy * MOVE_STEP_SIZE
 
             self.client.unit_move(marine.tag, (target_x, target_y))
-        elif command == ACTION_ATTACK_Z1:
+        elif command == self.ACTION_ATTACK_Z1:
             if len(zerglings) > 0:
                 self.client.unit_attack_unit(marine.tag, zerglings[0].tag)
-        elif command == ACTION_ATTACK_Z2:
+        elif command == self.ACTION_ATTACK_Z2:
             if len(zerglings) > 1:
                 self.client.unit_attack_unit(marine.tag, zerglings[1].tag)
         else:
@@ -305,7 +285,7 @@ class SC2GymEnv(gym.Env):
 
     def get_action_mask(self) -> np.ndarray:
         """ACTIONS=[MOVE, ATTACK_Z1, ATTACK_Z2]"""
-        mask = np.ones(NUM_COMMANDS, dtype=bool)
+        mask = np.ones(self.NUM_COMMANDS, dtype=bool)
         marine = self.units[1][0] if self.units[1] else None
         zerglings = self.units[2]
         if not marine:
@@ -313,8 +293,8 @@ class SC2GymEnv(gym.Env):
 
         # alive and in attack range
         ready = marine.weapon_cooldown == 0
-        mask[ACTION_ATTACK_Z1] = len(zerglings) > 0 and ready and zerglings[0].distance_to(marine) < MARINGE_SIGHT
-        mask[ACTION_ATTACK_Z2] = len(zerglings) > 1 and ready and zerglings[1].distance_to(marine) < MARINGE_SIGHT
+        mask[self.ACTION_ATTACK_Z1] = len(zerglings) > 0 and ready and zerglings[0].distance_to(marine) < MARINGE_SIGHT
+        mask[self.ACTION_ATTACK_Z2] = len(zerglings) > 1 and ready and zerglings[1].distance_to(marine) < MARINGE_SIGHT
         return mask
 
     def reset(

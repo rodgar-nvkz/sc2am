@@ -14,24 +14,21 @@ parallel prediction architecture.
 import pytest
 import torch
 
+from smarte.smarte_v3.env import SC2GymEnv
 from smarte.smarte_v3.model.actor_critic import ActorCritic
 from smarte.smarte_v3.model.config import ModelConfig
 from smarte.smarte_v3.model.heads import AngleHead
 
-# Constants matching the environment
-ACTION_MOVE = 0
-ACTION_ATTACK_Z1 = 1
-ACTION_ATTACK_Z2 = 2
+# Import action constants from environment class
+ACTION_MOVE = SC2GymEnv.ACTION_MOVE
+ACTION_ATTACK_Z1 = SC2GymEnv.ACTION_ATTACK_Z1
+ACTION_ATTACK_Z2 = SC2GymEnv.ACTION_ATTACK_Z2
 
 
 @pytest.fixture
 def config() -> ModelConfig:
     """Create a test configuration."""
-    return ModelConfig(
-        obs_size=11,
-        num_commands=3,
-        head_hidden_size=32,
-    )
+    return ModelConfig(obs_size=11, num_commands=3, move_action_id=ACTION_MOVE, head_hidden_size=32)
 
 
 @pytest.fixture
