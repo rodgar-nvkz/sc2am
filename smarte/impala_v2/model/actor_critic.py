@@ -14,14 +14,13 @@ The model supports:
 """
 
 from dataclasses import dataclass
-from typing import Any
 
 import torch
 from torch import Tensor, nn
 
-from smarte.impala_v2.model.config import ModelConfig
-from smarte.impala_v2.model.encoders import VectorEncoder
-from smarte.impala_v2.model.heads import AngleHead, CommandHead, CriticHead, HeadLoss, HeadOutput
+from .config import ModelConfig
+from .encoders import VectorEncoder
+from .heads import AngleHead, CommandHead, CriticHead, HeadLoss, HeadOutput
 
 
 @dataclass
@@ -236,8 +235,4 @@ class ActorCritic(nn.Module):
             targets=vtrace_targets,
         )
 
-        return {
-            "command": cmd_loss,
-            "angle": angle_loss,
-            "value": value_loss,
-        }
+        return {"command": cmd_loss, "angle": angle_loss, "value": value_loss}

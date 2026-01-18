@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from smarte.impala_v2.model.config import ModelConfig
-from smarte.impala_v2.model.heads.base import HeadLoss
+from ..config import ModelConfig
+from .base import HeadLoss
 
 
 class CriticHead(nn.Module):
@@ -38,6 +38,7 @@ class CriticHead(nn.Module):
                 nn.init.constant_(module.bias, 0.0)
 
         # Value head uses gain=1.0 for output layer
+        assert isinstance(self.net[-1].weight, torch.Tensor)
         nn.init.orthogonal_(self.net[-1].weight, gain=self.config.value_init_gain)
 
     def forward(self, features: Tensor, raw_obs: Tensor) -> Tensor:

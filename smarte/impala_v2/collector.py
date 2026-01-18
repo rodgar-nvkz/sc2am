@@ -13,10 +13,10 @@ import numpy as np
 import torch
 from loguru import logger
 
-from smarte.envs.impala_v2 import SC2GymEnv
-from smarte.impala_v2.config import IMPALAConfig
-from smarte.impala_v2.interop import SharedWeights
-from smarte.impala_v2.model import ActorCritic
+from .config import IMPALAConfig
+from .env import SC2GymEnv
+from .interop import SharedWeights
+from .model import ActorCritic
 
 
 @dataclass

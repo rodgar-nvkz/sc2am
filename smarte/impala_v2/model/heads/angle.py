@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, distributions, nn
 
-from smarte.impala_v2.model.config import ModelConfig
-from smarte.impala_v2.model.heads.base import ActionHead, HeadLoss, HeadOutput
+from ..config import ModelConfig
+from .base import ActionHead, HeadLoss, HeadOutput
 
 
 class AngleHead(ActionHead):

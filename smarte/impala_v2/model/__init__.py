@@ -17,10 +17,10 @@ Example:
     losses = model.compute_losses(output, old_log_probs, advantages, ...)
 """
 
-from smarte.impala_v2.model.actor_critic import ActorCritic, ActorCriticOutput
-from smarte.impala_v2.model.config import ModelConfig
-from smarte.impala_v2.model.encoders import VectorEncoder
-from smarte.impala_v2.model.heads import (
+from .actor_critic import ActorCritic, ActorCriticOutput
+from .config import ModelConfig
+from .encoders import VectorEncoder
+from .heads import (
     ActionHead,
     AngleHead,
     CommandHead,

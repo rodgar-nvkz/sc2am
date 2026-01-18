@@ -26,12 +26,12 @@ import numpy as np
 import torch
 from loguru import logger
 
-from smarte.envs.impala_v2 import ACTION_MOVE, NUM_COMMANDS, OBS_SIZE
-from smarte.impala_v2.collector import EpisodeBatch, collector_worker
-from smarte.impala_v2.config import IMPALAConfig
-from smarte.impala_v2.eval import eval_model
-from smarte.impala_v2.interop import SharedWeights
-from smarte.impala_v2.model import ActorCritic
+from .collector import EpisodeBatch, collector_worker
+from .config import IMPALAConfig
+from .env import ACTION_MOVE, NUM_COMMANDS, OBS_SIZE
+from .eval import eval_model
+from .interop import SharedWeights
+from .model import ActorCritic
 
 
 def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | None = None):

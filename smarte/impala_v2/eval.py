@@ -7,9 +7,10 @@ import numpy as np
 import torch
 from loguru import logger
 
-from smarte.envs.impala_v2 import NUM_COMMANDS, OBS_SIZE, SC2GymEnv
-from smarte.impala_v2.model import ActorCritic, ModelConfig
 from smarte.settings import PROJECT_ROOT
+
+from .env import NUM_COMMANDS, OBS_SIZE, SC2GymEnv
+from .model import ActorCritic, ModelConfig
 
 
 def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level: int = 0):

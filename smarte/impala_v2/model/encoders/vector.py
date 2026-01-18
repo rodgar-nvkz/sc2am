@@ -3,7 +3,7 @@
 import torch
 from torch import Tensor, nn
 
-from smarte.impala_v2.model.config import ModelConfig
+from ..config import ModelConfig
 
 
 class VectorEncoder(nn.Module):

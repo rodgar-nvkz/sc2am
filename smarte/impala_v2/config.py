@@ -1,6 +1,6 @@
 import dataclasses
 
-from smarte.impala_v2.model.config import ModelConfig
+from .model.config import ModelConfig
 
 
 @dataclasses.dataclass
