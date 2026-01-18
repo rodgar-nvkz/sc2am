@@ -106,6 +106,10 @@ class ActionTypeHead(ActionHead):
         log_prob = dist.log_prob(action_type)
         entropy = dist.entropy()
 
+        # Clamp log_prob to prevent extreme values that cause ratio explosion
+        # in off-policy training (IMPALA with stale weights)
+        log_prob = torch.clamp(log_prob, min=-100.0)
+
         return action_type, log_prob, entropy, dist
 
     def get_deterministic_action(

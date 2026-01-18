@@ -17,6 +17,7 @@ from .env import (
     ACTION_ATTACK_Z1,
     ACTION_ATTACK_Z2,
     ACTION_MOVE,
+    ACTION_STOP,
     NUM_COMMANDS,
     SC2GymEnv,
 )
@@ -32,7 +33,7 @@ def make_action(command: int, angle_rad: float = 0.0) -> dict:
 
 def print_obs(obs: np.ndarray, step: int, action: dict | None = None, mask: np.ndarray | None = None) -> None:
     """Pretty print observation."""
-    cmd_names = ["MOVE", "ATK_Z1", "ATK_Z2"]
+    cmd_names = ["MOVE", "ATK_Z1", "ATK_Z2", "STOP"]
 
     if action is not None:
         cmd = action["command"]

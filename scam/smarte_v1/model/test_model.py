@@ -765,7 +765,8 @@ class TestEnvActionConversion:
 
         env_action = model.to_env_action(action, batch_idx=0)
 
-        assert env_action["command"] == ACTION_STOP
+        # ENV_STOP = 3 (different from model's ACTION_STOP = 2)
+        assert env_action["command"] == 3
 
 
 # =============================================================================
@@ -1050,6 +1051,44 @@ class TestAttackTargetHead:
         target, _, _, _ = head(attn_logits, enemy_mask=enemy_mask)
 
         assert torch.all(target == 0)
+
+    def test_no_nan_gradient_with_partial_inf_logits(self, config: ModelConfig):
+        """Test no NaN gradients when attn_logits contain -inf for some enemies.
+
+        This is a regression test for a bug where temperature scaling on -inf
+        values caused NaN gradients. When cross-attention masks dead enemies,
+        their logits become -inf. The attack_target_head must handle this
+        without producing NaN gradients through the learnable temperature.
+        """
+        head = AttackTargetHead(config)
+        batch_size = 4
+
+        # Simulate attn_logits from cross-attention where some enemies are dead
+        # Sample 0: enemy 0 dead (-inf), enemy 1 alive
+        # Sample 1: both alive
+        # Sample 2: both alive
+        # Sample 3: enemy 1 dead (-inf), enemy 0 alive
+        attn_logits = torch.randn(batch_size, config.max_enemies)
+        attn_logits[0, 0] = float("-inf")
+        attn_logits[3, 1] = float("-inf")
+
+        # Corresponding enemy mask
+        enemy_mask = torch.ones(batch_size, config.max_enemies, dtype=torch.bool)
+        enemy_mask[0, 0] = False
+        enemy_mask[3, 1] = False
+
+        # Forward pass
+        target, log_prob, entropy, _ = head(attn_logits, enemy_mask=enemy_mask)
+
+        # Compute a simple loss and backprop
+        loss = log_prob.sum()
+        loss.backward()
+
+        # Check that log_temperature gradient is not NaN
+        assert head.log_temperature.grad is not None, "log_temperature should have gradient"
+        assert not torch.isnan(head.log_temperature.grad).any(), (
+            f"log_temperature gradient should not be NaN, got {head.log_temperature.grad}"
+        )
 
 
 # =============================================================================

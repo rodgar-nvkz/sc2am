@@ -125,6 +125,10 @@ class MoveDirectionHead(ActionHead):
         #   2. PPO uses log prob ratios, so constant biases cancel out
         log_prob = dist.log_prob(direction).sum(dim=-1)  # (B,)
 
+        # Clamp log_prob to prevent extreme values that cause ratio explosion
+        # in off-policy training (IMPALA with stale weights)
+        log_prob = torch.clamp(log_prob, min=-100.0)
+
         # Compute entropy (sum over independent components)
         entropy = dist.entropy().sum(dim=-1)  # (B,)
 

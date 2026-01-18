@@ -98,34 +98,3 @@ class ActionHead(nn.Module):
                 "clip_fraction": clip_fraction,
             },
         )
-
-
-class ValueHead(nn.Module):
-    """Base class for value estimation heads.
-
-    Value heads estimate state value V(s) for the critic.
-    """
-
-    def forward(self, features: Tensor, raw_obs: Tensor) -> Tensor:
-        """Forward pass: estimate state value.
-
-        Args:
-            features: Encoded features from encoder (B, embed_size)
-            raw_obs: Raw observation for skip connection (B, obs_size)
-
-        Returns:
-            Value estimates (B,)
-        """
-        raise NotImplementedError
-
-    def compute_loss(self, values: Tensor, targets: Tensor) -> HeadLoss:
-        """Compute value loss.
-
-        Args:
-            values: Predicted values (B,)
-            targets: Target values, e.g., V-trace targets (B,)
-
-        Returns:
-            HeadLoss with loss tensor and metrics dict
-        """
-        raise NotImplementedError

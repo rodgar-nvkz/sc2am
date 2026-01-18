@@ -75,34 +75,36 @@ class AttackTargetHead(ActionHead):
                 - entropy: Entropy of the distribution (B,)
                 - distribution: Categorical distribution object
         """
-        # Apply temperature scaling
-        # Detach temperature for edge cases to prevent NaN gradients
+        # Create combined mask: enemy must be alive AND in range
+        combined_mask = self._create_combined_mask(enemy_mask, range_mask, attn_logits.device)
+
+        # Replace ALL -inf values with zeros BEFORE temperature scaling
+        # This prevents NaN gradients from -inf / temperature
+        # The mask will be applied after scaling to set invalid targets back to -inf
+        is_neg_inf = torch.isinf(attn_logits) & (attn_logits < 0)
+        safe_logits = torch.where(is_neg_inf, torch.zeros_like(attn_logits), attn_logits)
+
+        # Apply temperature scaling (now safe from -inf / temperature = NaN grad)
         temperature = torch.clamp(
             torch.exp(self.log_temperature),
             self.min_temperature,
             self.max_temperature,
         )
-        scaled_logits = attn_logits / temperature
-
-        # Create combined mask: enemy must be alive AND in range
-        combined_mask = self._create_combined_mask(enemy_mask, range_mask, attn_logits.device)
+        scaled_logits = safe_logits / temperature
 
         # Apply mask: set invalid targets to -inf
         if combined_mask is not None:
             scaled_logits = scaled_logits.masked_fill(~combined_mask, float("-inf"))
 
-        # Handle edge case: no valid targets
-        # This shouldn't happen if action masking is done correctly,
-        # but we handle it gracefully by using uniform distribution
+        # Handle edge case: no valid targets (all -inf after masking)
+        # Replace with uniform distribution (zeros) to avoid Categorical error
         all_invalid = ~combined_mask.any(dim=-1) if combined_mask is not None else None
         if all_invalid is not None and all_invalid.any():
-            # For samples with no valid targets, use uniform over all enemies
-            # Detach to prevent NaN gradients through temperature
             uniform_logits = torch.zeros_like(scaled_logits)
             scaled_logits = torch.where(
                 all_invalid.unsqueeze(-1).expand_as(scaled_logits),
                 uniform_logits,
-                scaled_logits.detach() if all_invalid.all() else scaled_logits,
+                scaled_logits,
             )
 
         # Create distribution
@@ -115,7 +117,7 @@ class AttackTargetHead(ActionHead):
         log_prob = dist.log_prob(attack_target)
         entropy = dist.entropy()
 
-        # Clamp log_prob to prevent -inf which causes NaN gradients
+        # Clamp log_prob to prevent -inf which causes issues in loss computation
         log_prob = torch.clamp(log_prob, min=-100.0)
 
         return attack_target, log_prob, entropy, dist

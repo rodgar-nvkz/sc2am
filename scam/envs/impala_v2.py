@@ -265,13 +265,16 @@ class SC2GymEnv(gym.Env):
         """Compute reward based on damage dealt/taken and terminal conditions"""
 
         if self.current_step >= MAX_EPISODE_STEPS:
-            return -0.01 * self.current_step * self.game_steps_per_env
+            return -1
 
-        if not self.units[1] or not self.units[2]:
-            # ally_health = sum([u.health / u.health_max for u in self.units[1]], 0.0) / 1.0
+        if not self.units[2]:
+            return 1
+
+        if not self.units[1]:
+            ally_health = sum([u.health / u.health_max for u in self.units[1]], 0.0) / 1.0
             enemy_max_health = ZERGLING_MAX_HP * 2
             enemy_health_left = sum([u.health for u in self.units[2]], 0.0)
-            return 1 - (enemy_health_left / enemy_max_health)
+            return ally_health - (enemy_health_left / enemy_max_health)
 
         return 0
 

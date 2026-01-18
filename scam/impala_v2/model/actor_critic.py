@@ -152,11 +152,7 @@ class ActorCritic(nn.Module):
         # Value head
         value = self.value_head(features=features, raw_obs=obs)
 
-        return ActorCriticOutput(
-            command=cmd_output,
-            angle=angle_output,
-            value=value,
-        )
+        return ActorCriticOutput(command=cmd_output, angle=angle_output, value=value)
 
     def get_value(self, obs: Tensor) -> Tensor:
         """Get value estimate only (for V-trace computation).
@@ -189,18 +185,10 @@ class ActorCritic(nn.Module):
         features = self._encode(obs)
 
         # Deterministic command (argmax)
-        command = self.command_head.get_deterministic_action(
-            features=features,
-            raw_obs=obs,
-            mask=action_mask,
-        )
+        command = self.command_head.get_deterministic_action(features=features, raw_obs=obs, mask=action_mask)
 
         # Deterministic angle (mean of distribution)
-        angle = self.angle_head.get_deterministic_action(
-            features=features,
-            raw_obs=obs,
-            command=command,
-        )
+        angle = self.angle_head.get_deterministic_action(features=features, raw_obs=obs, command=command)
 
         return command, angle
 

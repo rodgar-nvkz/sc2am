@@ -1,5 +1,4 @@
 import dataclasses
-from typing import Literal
 
 from .model.config import ModelConfig
 
@@ -26,7 +25,7 @@ class IMPALAConfig:
     rho_bar: float = 1.0  # Truncation for importance weights
 
     # Worker settings
-    weight_sync_interval: int = 5  # Sync weights every N episodes (reduces lock contention)
+    weight_sync_interval: int = 2  # Sync weights every N episodes (lower = fresher weights, less off-policy)
 
     # PPO-style clipping
     clip_epsilon: float = 0.2

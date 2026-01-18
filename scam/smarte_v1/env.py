@@ -66,7 +66,8 @@ NUM_ZERGLINGS = 2
 ACTION_MOVE = 0
 ACTION_ATTACK_Z1 = 1
 ACTION_ATTACK_Z2 = 2
-NUM_COMMANDS = 3
+ACTION_STOP = 3
+NUM_COMMANDS = 4
 
 # Movement
 MOVE_STEP_SIZE = 2.0
@@ -76,7 +77,7 @@ MAX_EPISODE_STEPS = int(22.4 * 30)  # 30 seconds realtime
 GAME_STEPS_PER_ENV = 2
 
 # Spawn config (edit by hand for experiments)
-SPAWN_DISTANCE = 14.0
+SPAWN_DISTANCE = 6.0
 
 # Observation: time(1) + marine(hp, cd, cd_norm)(3) + z1(hp, sin, cos, dist)(4) + z2(4) = 12
 OBS_SIZE = 12
@@ -205,13 +206,13 @@ class SC2GymEnv(gym.Env):
         self.terminated = self.marine is None or self.enemies.all_dead()
 
     def _clean_battlefield(self) -> None:
+        # Query ALL units on the map and kill them, not just tracked ones
+        # This prevents leftover units from previous episodes
+        obs = self.client.get_observation()
         tags = []
-        if self.marine:
-            tags.append(self.marine.tag)
-        for i in range(self.enemies.capacity):
-            tag = self.enemies.get_tag(i)
-            if tag is not None:
-                tags.append(tag)
+        for unit in obs.observation.raw_data.units:
+            if unit.unit_type in (UNIT_MARINE, UNIT_ZERGLING):
+                tags.append(unit.tag)
         if tags:
             self.client.kill_units(tags)
         if self.game.reset_map():
@@ -273,6 +274,11 @@ class SC2GymEnv(gym.Env):
             return
 
         command = action["command"]
+        mask = self.get_action_mask()
+
+        # If the chosen action is masked, do nothing (or could default to STOP)
+        if not mask[command]:
+            return
 
         if command == ACTION_MOVE:
             sin_a, cos_a = action["angle"]
@@ -290,10 +296,22 @@ class SC2GymEnv(gym.Env):
             if enemy is not None:
                 self.client.unit_attack_unit(self.marine.tag, enemy.tag)
 
+        elif command == ACTION_STOP:
+            # Stop current action - unit will hold position
+            self.client.unit_stop(self.marine.tag)
+
     def get_action_mask(self) -> np.ndarray:
+        """Get action mask for valid commands.
+
+        Returns:
+            bool array [MOVE, ATTACK_Z1, ATTACK_Z2, STOP]
+            - MOVE: always True
+            - ATTACK_Zx: True only if enemy alive AND in range
+            - STOP: always True
+        """
         mask = np.ones(NUM_COMMANDS, dtype=bool)
 
-        if self.marine is None:
+        if self.marine is None or self.marine.weapon_cooldown > 0:
             mask[ACTION_ATTACK_Z1] = False
             mask[ACTION_ATTACK_Z2] = False
             return mask

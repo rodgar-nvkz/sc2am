@@ -27,7 +27,6 @@ from scam.impala_v2.model.heads import (
     CriticHead,
     HeadLoss,
     HeadOutput,
-    ValueHead,
 )
 
 __all__ = [
@@ -45,5 +44,4 @@ __all__ = [
     "CriticHead",
     "HeadLoss",
     "HeadOutput",
-    "ValueHead",
 ]

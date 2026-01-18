@@ -5,10 +5,10 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from scam.impala_v2.model.config import ModelConfig
-from scam.impala_v2.model.heads.base import HeadLoss, ValueHead
+from scam.impala_v2.model.heads.base import HeadLoss
 
 
-class CriticHead(ValueHead):
+class CriticHead(nn.Module):
     """Value head for estimating state value V(s).
 
     Used by the critic to estimate expected returns from a state.

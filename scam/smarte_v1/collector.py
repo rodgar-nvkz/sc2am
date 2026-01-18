@@ -1,8 +1,17 @@
 """
-Simplified IMPALA collector with LSTM support.
+IMPALA collector with hybrid action space support.
 
 Each worker collects complete episodes and sends them to the learner.
-The LSTM hidden state is tracked during collection and reset at episode boundaries.
+The GRU hidden state is tracked during collection and reset at episode boundaries.
+
+Action Space:
+    - action_type: Discrete [MOVE=0, ATTACK=1, STOP=2]
+    - move_direction: Continuous [sin, cos] (used when action_type=MOVE)
+    - attack_target: Integer index (used when action_type=ATTACK)
+
+Environment expects:
+    - command: Discrete(3) - MOVE=0, ATTACK_Z1=1, ATTACK_Z2=2
+    - angle: Box(2) - [sin, cos] for movement direction
 """
 
 import os
@@ -22,13 +31,19 @@ from .model import ActorCritic
 
 @dataclass
 class Episode:
-    """A single complete episode from a worker."""
+    """A single complete episode from a worker.
+
+    Stores all action components for hybrid action space training.
+    """
 
     worker_id: int
     observations: np.ndarray  # (T, obs_size)
-    actions: np.ndarray  # (T,) - discrete actions
+    action_types: np.ndarray  # (T,) - discrete action type indices
+    move_directions: np.ndarray  # (T, 2) - [sin, cos] for each step
+    attack_targets: np.ndarray  # (T,) - target indices for each step
+    action_masks: np.ndarray  # (T, 3) - valid action mask per step
     rewards: np.ndarray  # (T,)
-    behavior_log_probs: np.ndarray  # (T,)
+    behavior_log_probs: np.ndarray  # (T,) - combined log probs
     behavior_values: np.ndarray  # (T,)
     weight_version: int
     won: bool  # True if marine survived and all zerglings dead
@@ -52,7 +67,10 @@ class EpisodeBatch:
 
     # Padded and batched tensors (num_episodes, max_len, ...)
     observations: np.ndarray  # (B, T_max, obs_size)
-    actions: np.ndarray  # (B, T_max)
+    action_types: np.ndarray  # (B, T_max)
+    move_directions: np.ndarray  # (B, T_max, 2)
+    attack_targets: np.ndarray  # (B, T_max)
+    action_masks: np.ndarray  # (B, T_max, 3)
     rewards: np.ndarray  # (B, T_max)
     behavior_log_probs: np.ndarray  # (B, T_max)
     behavior_values: np.ndarray  # (B, T_max)
@@ -65,7 +83,7 @@ class EpisodeBatch:
     # Metadata
     episode_lengths: list[int]
     episode_returns: list[float]
-    episode_wins: list[bool]  # Track wins separately from rewards
+    episode_wins: list[bool]
     weight_versions: list[int]
     num_episodes: int
     total_steps: int
@@ -88,8 +106,13 @@ class EpisodeBatch:
 
         # Pre-allocate padded arrays
         obs_size = config.model.obs_size
+        num_action_types = config.model.num_action_types
+
         observations = np.zeros((num_episodes, max_length, obs_size), dtype=np.float32)
-        actions = np.zeros((num_episodes, max_length), dtype=np.int64)
+        action_types = np.zeros((num_episodes, max_length), dtype=np.int64)
+        move_directions = np.zeros((num_episodes, max_length, 2), dtype=np.float32)
+        attack_targets = np.zeros((num_episodes, max_length), dtype=np.int64)
+        action_masks = np.ones((num_episodes, max_length, num_action_types), dtype=bool)
         rewards = np.zeros((num_episodes, max_length), dtype=np.float32)
         behavior_log_probs = np.zeros((num_episodes, max_length), dtype=np.float32)
         behavior_values = np.zeros((num_episodes, max_length), dtype=np.float32)
@@ -103,7 +126,10 @@ class EpisodeBatch:
 
             # Copy episode data (rest stays zero-padded)
             observations[i, :T] = ep.observations
-            actions[i, :T] = ep.actions
+            action_types[i, :T] = ep.action_types
+            move_directions[i, :T] = ep.move_directions
+            attack_targets[i, :T] = ep.attack_targets
+            action_masks[i, :T] = ep.action_masks
             rewards[i, :T] = ep.rewards
             behavior_log_probs[i, :T] = ep.behavior_log_probs
             behavior_values[i, :T] = ep.behavior_values
@@ -120,7 +146,10 @@ class EpisodeBatch:
 
         return cls(
             observations=observations,
-            actions=actions,
+            action_types=action_types,
+            move_directions=move_directions,
+            attack_targets=attack_targets,
+            action_masks=action_masks,
             rewards=rewards,
             behavior_log_probs=behavior_log_probs,
             behavior_values=behavior_values,
@@ -143,7 +172,10 @@ class EpisodeBatch:
         """
         return {
             "observations": torch.from_numpy(self.observations).to(device),
-            "actions": torch.from_numpy(self.actions).to(device),
+            "action_types": torch.from_numpy(self.action_types).to(device),
+            "move_directions": torch.from_numpy(self.move_directions).to(device),
+            "attack_targets": torch.from_numpy(self.attack_targets).to(device),
+            "action_masks": torch.from_numpy(self.action_masks).to(device),
             "rewards": torch.from_numpy(self.rewards).to(device),
             "behavior_log_probs": torch.from_numpy(self.behavior_log_probs).to(device),
             "behavior_values": torch.from_numpy(self.behavior_values).to(device),
@@ -186,7 +218,7 @@ def collector_worker(
     shutdown_event: Any,
     config: IMPALAConfig,
 ):
-    """Worker process that collects complete episodes with LSTM."""
+    """Worker process that collects complete episodes with GRU hidden state."""
 
     # Ignore SIGINT in workers (let main handle it)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -200,12 +232,7 @@ def collector_worker(
     os.environ["MKL_NUM_THREADS"] = "1"
 
     try:
-        env = SC2GymEnv({
-            "upgrade_level": config.upgrade_levels,
-            "num_move_directions": config.model.num_move_directions,
-            "reward_strategy": config.reward_strategy,
-            "reward_params": config.reward_params,
-        })
+        env = SC2GymEnv()
         model = ActorCritic(config.model)
         model.eval()
 
@@ -234,7 +261,7 @@ def collector_worker(
 
             # Send episode to main
             try:
-                episode_queue.put(episode, timeout=1.0)
+                episode_queue.put(episode, timeout=10.0)
             except Exception as e:
                 logger.warning(f"Worker {worker_id} failed to send episode: {e}")
                 continue
@@ -255,11 +282,19 @@ def collect_episode(
     weight_version: int,
     max_steps: int = 1024
 ) -> Episode:
-    """Collect a single complete episode with LSTM hidden state tracking."""
+    """Collect a single complete episode with GRU hidden state tracking.
+
+    Handles hybrid action space:
+        - Model outputs: action_type, move_direction, attack_target
+        - Env expects: {"command": int, "angle": np.array}
+    """
 
     # Use lists for variable-length episode
     observations = []
-    actions = []
+    action_types = []
+    move_directions = []
+    attack_targets = []
+    action_masks = []
     rewards = []
     log_probs = []
     values = []
@@ -267,35 +302,71 @@ def collect_episode(
     obs, info = env.reset()
     done = False
     steps = 0
-    won = False  # Track if episode was won
+    won = False
 
-    # Initialize LSTM hidden state
+    # Initialize GRU hidden state
     hidden = model.get_initial_hidden(batch_size=1)
 
-    # Pre-allocate observation tensor for reuse (avoid repeated allocations)
+    # Pre-allocate observation tensor for reuse
     obs_tensor = torch.empty(1, obs.shape[0], dtype=torch.float32)
 
-    # Use inference_mode for faster execution (disables autograd more aggressively than no_grad)
+    # Use inference_mode for faster execution
     with torch.inference_mode():
         while not done and steps < max_steps:
-            observations.append(obs)
+            observations.append(obs.copy())
 
-            # Get action from policy (with LSTM)
-            # Reuse pre-allocated tensor
+            # Get action mask from environment
+            # Env mask: [MOVE, ATTACK_Z1, ATTACK_Z2, STOP] (4 commands)
+            # Model mask: [MOVE, ATTACK, STOP] (3 action types)
+            env_action_mask = info.get("action_mask", None)
+            action_mask_tensor = None
+            if env_action_mask is not None:
+                # Convert env mask [MOVE, ATTACK_Z1, ATTACK_Z2, STOP] to model mask [MOVE, ATTACK, STOP]
+                # ATTACK is valid if either ATTACK_Z1 or ATTACK_Z2 is valid
+                model_mask = np.array([
+                    env_action_mask[0],  # MOVE
+                    env_action_mask[1] or env_action_mask[2],  # ATTACK (either target valid)
+                    env_action_mask[3] if len(env_action_mask) > 3 else True,  # STOP
+                ], dtype=bool)
+                action_masks.append(model_mask.copy())
+                action_mask_tensor = torch.from_numpy(model_mask).unsqueeze(0)  # (1, 3)
+
+                # Also create range mask for attack targeting (which enemies are in range)
+                range_mask = torch.tensor([[env_action_mask[1], env_action_mask[2]]], dtype=torch.bool)
+            else:
+                action_masks.append(np.ones(3, dtype=bool))
+                range_mask = None
+
+            # Get action from policy
             obs_tensor[0].copy_(torch.from_numpy(obs))
-            output = model(obs_tensor, hidden=hidden)
+            output = model(
+                obs_tensor,
+                hidden=hidden,
+                action_mask=action_mask_tensor,
+                range_mask=range_mask,
+            )
 
             # Update hidden state for next step
             hidden = output.hidden
 
-            # Record action and statistics
-            action = output.action.action.item()
-            actions.append(action)
-            log_probs.append(output.action.log_prob.item())
-            values.append(output.value.item())
+            # Record action components
+            action_type = output.action.action_type[0].item()
+            move_dir = output.action.move_direction[0].cpu().numpy()
+            attack_target = output.action.attack_target[0].item()
+
+            action_types.append(action_type)
+            move_directions.append(move_dir.copy())
+            attack_targets.append(attack_target)
+
+            # Record statistics (combined log prob from model)
+            log_probs.append(output.log_prob[0].item())
+            values.append(output.value[0].item())
+
+            # Convert to environment action format
+            env_action = model.to_env_action(output.action, batch_idx=0)
 
             # Step environment
-            obs, reward, terminated, truncated, info = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(env_action)
             done = terminated or truncated
 
             rewards.append(reward)
@@ -306,7 +377,10 @@ def collect_episode(
     return Episode(
         worker_id=worker_id,
         observations=np.array(observations, dtype=np.float32),
-        actions=np.array(actions, dtype=np.int64),
+        action_types=np.array(action_types, dtype=np.int64),
+        move_directions=np.array(move_directions, dtype=np.float32),
+        attack_targets=np.array(attack_targets, dtype=np.int64),
+        action_masks=np.array(action_masks, dtype=bool),
         rewards=np.array(rewards, dtype=np.float32),
         behavior_log_probs=np.array(log_probs, dtype=np.float32),
         behavior_values=np.array(values, dtype=np.float32),

@@ -1,8 +1,13 @@
 """
-IMPALA-style training with LSTM for SC2 Marine vs Zerglings.
+IMPALA-style training with GRU for SC2 Marine vs Zerglings.
 
 Architecture:
-    obs → VectorEncoder → LSTM → [ActorHead, CriticHead]
+    obs → EntityEncoder → GRU → CrossAttention → [ActionHeads, ValueHead]
+
+Action Space (Hybrid):
+    - action_type: Discrete [MOVE=0, ATTACK=1, STOP=2]
+    - move_direction: Continuous [sin, cos] (conditional on MOVE)
+    - attack_target: Pointer over N enemies (conditional on ATTACK)
 
 Key optimizations:
 - Batched episode processing (pad + stack)
@@ -13,15 +18,9 @@ Key optimizations:
 - Lock-free weight sharing between processes
 
 Data flow:
-    Worker 1: [SC2 + Policy + LSTM] -> episode -> Queue ->
-    Worker 2: [SC2 + Policy + LSTM] -> episode -> Queue ->  Main: V-trace -> Train -> Broadcast
-    Worker N: [SC2 + Policy + LSTM] -> episode -> Queue ->
-
-Performance notes:
-- Each worker runs SC2 (CPU-heavy) + model inference (CPU)
-- Workers are limited to 1 PyTorch thread each to avoid CPU oversubscription
-- Weight sync happens every N episodes to reduce lock contention
-- Main process uses GPU for training (batch forward + backward)
+    Worker 1: [SC2 + Policy + GRU] -> episode -> Queue ->
+    Worker 2: [SC2 + Policy + GRU] -> episode -> Queue ->  Main: V-trace -> Train -> Broadcast
+    Worker N: [SC2 + Policy + GRU] -> episode -> Queue ->
 """
 
 from __future__ import annotations
@@ -30,6 +29,7 @@ import argparse
 import dataclasses
 import multiprocessing as mp
 import os
+import sys
 import time
 from collections import deque
 from multiprocessing import Event, Process, Queue
@@ -42,7 +42,6 @@ from loguru import logger
 
 from .collector import EpisodeBatch, collector_worker
 from .config import IMPALAConfig
-from .env import OBS_SIZE
 from .eval import eval_model
 from .interop import SharedWeights
 from .model import ActorCritic
@@ -79,8 +78,6 @@ def train(
     print(f"Using device: {device}")
 
     config = IMPALAConfig(total_episodes=total_episodes, num_workers=num_workers, upgrade_levels=[1])
-    config.model.obs_size = OBS_SIZE
-    # num_actions is computed in __post_init__ from num_move_directions (default=4)
 
     model = ActorCritic(config.model).to(device)
     compiled_model: Any = model  # For type checker compatibility with torch.compile
@@ -91,8 +88,6 @@ def train(
         model.load_state_dict(checkpoint["model_state_dict"])
 
     # Compile model for faster execution (PyTorch 2.0+)
-    # Note: For training with variable batch sizes, 'default' mode is often better
-    # than 'reduce-overhead' which is optimized for repeated same-shape inference
     if compile_model and hasattr(torch, "compile"):
         print("Compiling model with torch.compile...")
         compiled_model = torch.compile(model, mode="default", fullgraph=False)
@@ -101,10 +96,10 @@ def train(
     # Print model info
     param_count = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {param_count:,}")
-    print(f"Action space: {config.model.num_actions} discrete actions")
-    print(f"  - Move directions: 0-{config.model.num_move_directions - 1} ({config.model.num_move_directions} directions)")
-    print(f"  - Attack Z1: {config.model.action_attack_z1}, Attack Z2: {config.model.action_attack_z2}")
-    print(f"  - Stop: {config.model.action_stop}, Skip: {config.model.action_skip}")
+    print("Action space: Hybrid")
+    print("  - Action types: MOVE=0, ATTACK=1, STOP=2")
+    print("  - Move direction: continuous [sin, cos]")
+    print(f"  - Attack target: pointer over {config.model.max_enemies} enemies")
 
     episode_queue: Queue[Any] = Queue(maxsize=num_workers * 2)
     shared_weights = SharedWeights(model)  # Always use uncompiled model for weight sharing
@@ -136,7 +131,7 @@ def train(
     episode_wins: deque[bool] = deque(maxlen=100)
     start_time = time.time()
 
-    print(f"\nStarting LSTM IMPALA training for {total_episodes:,} episodes...")
+    print(f"\nStarting IMPALA training for {total_episodes:,} episodes...")
     print(f"Episodes per batch: {config.episodes_per_batch}, Workers: {num_workers}")
 
     try:
@@ -166,11 +161,21 @@ def train(
             # Transfer batch to GPU once (single transfer for all data)
             tensors = batch.to_tensors(device)
             obs_batch = tensors["observations"]  # (B, T_max, obs_size)
-            actions_batch = tensors["actions"]  # (B, T_max)
+            action_types_batch = tensors["action_types"]  # (B, T_max)
+            move_directions_batch = tensors["move_directions"]  # (B, T_max, 2)
+            attack_targets_batch = tensors["attack_targets"]  # (B, T_max)
+            action_masks_batch = tensors["action_masks"]  # (B, T_max, 3)
             old_log_probs_batch = tensors["behavior_log_probs"]  # (B, T_max)
             vtrace_targets_batch = tensors["vtrace_targets"]  # (B, T_max)
             advantages_batch = tensors["advantages"]  # (B, T_max)
             mask_batch = tensors["mask"]  # (B, T_max) - True for valid positions
+
+            # Prepare actions dict for forward_sequence
+            actions_dict = {
+                "action_type": action_types_batch,
+                "move_direction": move_directions_batch,
+                "attack_target": attack_targets_batch,
+            }
 
             # === Training loop: multiple epochs over the batch ===
             compiled_model.train()
@@ -181,21 +186,22 @@ def train(
 
             for _ in range(config.num_epochs):
                 # Single forward pass for ALL episodes at once
-                # LSTM processes (B, T_max, obs_size) in parallel
+                # GRU processes (B, T_max, obs_size) in parallel
                 output = compiled_model.forward_sequence(
                     obs_seq=obs_batch,
                     hidden=None,  # Start with zeros for each episode
-                    actions=actions_batch,
+                    actions=actions_dict,
+                    action_masks=action_masks_batch,
                 )
 
-                # output.action.log_prob: (B, T_max)
-                # output.action.entropy: (B, T_max)
-                # output.value: (B, T_max)
+                # output.log_prob: (B, T_max) - combined log probability
+                # output.entropy: (B, T_max) - combined entropy
+                # output.value: (B, T_max) - value estimates
 
                 # Flatten and apply mask to get only valid positions
                 mask_flat = mask_batch.reshape(-1)  # (B * T_max,)
-                log_probs_flat = output.action.log_prob.reshape(-1)[mask_flat]  # (N_valid,)
-                entropies_flat = output.action.entropy.reshape(-1)[mask_flat]  # (N_valid,)
+                log_probs_flat = output.log_prob.reshape(-1)[mask_flat]  # (N_valid,)
+                entropies_flat = output.entropy.reshape(-1)[mask_flat]  # (N_valid,)
                 values_flat = output.value.reshape(-1)[mask_flat]  # (N_valid,)
 
                 old_log_probs_flat = old_log_probs_batch.reshape(-1)[mask_flat]
@@ -206,7 +212,11 @@ def train(
                 advantages_norm = (advantages_flat - advantages_flat.mean()) / (advantages_flat.std() + 1e-8)
 
                 # Compute policy loss (PPO-style clipping)
-                ratio = torch.exp(log_probs_flat - old_log_probs_flat)
+                # Clamp log prob difference to prevent ratio explosion from off-policy samples
+                # This is critical for IMPALA where workers use stale weights
+                log_diff = log_probs_flat - old_log_probs_flat
+                log_diff_clamped = torch.clamp(log_diff, -10.0, 10.0)  # ratio in [exp(-10), exp(10)] ≈ [4.5e-5, 22026]
+                ratio = torch.exp(log_diff_clamped)
                 surr1 = ratio * advantages_norm
                 surr2 = torch.clamp(ratio, 1 - config.clip_epsilon, 1 + config.clip_epsilon) * advantages_norm
                 policy_loss = -torch.min(surr1, surr2).mean()
@@ -225,7 +235,7 @@ def train(
                 # Backward pass
                 optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)  # Use uncompiled for params
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
                 optimizer.step()
 
                 total_loss += loss.item()
@@ -302,7 +312,7 @@ def train(
         "config": dataclasses.asdict(config),
     }
 
-    model_path = model_dir / f"lstm_v0_{timestamp}.pt"
+    model_path = model_dir / f"smarte_v1_{timestamp}.pt"
     torch.save(checkpoint, model_path)
     print(f"Model saved to {model_path}")
 
@@ -313,11 +323,12 @@ def train(
 # CLI
 # ============================================================================
 
+logger.remove()
+logger.add(sys.stderr, level="INFO")
+
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="LSTM IMPALA training for Marine vs Zerglings (40 discrete actions)"
-    )
+    parser = argparse.ArgumentParser(description="IMPALA training for Marine vs Zerglings (Hybrid Action Space)")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # Train command
