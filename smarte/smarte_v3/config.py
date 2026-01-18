@@ -20,7 +20,7 @@ class IMPALAConfig:
 
     # V-trace / GAE parameters
     gamma: float = 0.99
-    gae_lambda: float = 0.99  # GAE λ for variance reduction (0=TD(0), 1=MC)
+    gae_lambda: float = 0.975  # GAE λ for variance reduction (0=TD(0), 1=MC)
     c_bar: float = 1.0  # Truncation for trace coefficients
     rho_bar: float = 1.0  # Truncation for importance weights
 

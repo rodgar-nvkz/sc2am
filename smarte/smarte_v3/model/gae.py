@@ -5,12 +5,9 @@ GAE provides a family of estimators parameterized by λ ∈ [0, 1]:
 - λ = 1: MC returns - high variance, low bias
 - λ = 0.95: Good balance for most RL tasks
 
-Key insight: GAE computes advantages PER-EPISODE using exponentially-weighted
+GAE computes advantages PER-EPISODE using exponentially-weighted
 TD errors. This avoids the "averaging problem" where advantages from different
 episodes get mixed during batch normalization.
-
-Reference: Schulman et al. "High-Dimensional Continuous Control Using
-Generalized Advantage Estimation" (2016)
 """
 
 import numpy as np
