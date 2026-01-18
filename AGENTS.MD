@@ -33,13 +33,13 @@ Notes:
 - `SC2Game`: Extends server with observation helpers (grids, unit positions)
 
 
-## IMPALA Training (`scam/impala_*/`)
+## IMPALA Training (`smarte/impala_*/`)
 Marine vs Zerglings trainer with hybrid actions (discrete command + continuous angle).
 Async distributed workers collects complete episodes, learner batches them and trains. No fixed rollouts, no padding, no mini-batches.
 Key insight: for sparse terminal rewards, match your abstractions to the problem - think in episodes, not steps.
 Bigger batches with more epochs extract more signal. Watch staleness to know when you've pushed too far.
 
-## SMARTE v0 (`scam/smarte_v0/`)
+## SMARTE v0 (`smarte/smarte_v0/`)
 LSTM-based discrete action space variant. Key improvements over impala_v2:
 
 ### Reward Strategies (`rewards.py`)
