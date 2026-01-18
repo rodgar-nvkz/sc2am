@@ -40,13 +40,13 @@ class CommandHead(ActionHead):
         assert isinstance(output_layer, nn.Linear)
         nn.init.orthogonal_(output_layer.weight, gain=self.config.policy_init_gain)
 
-    def forward(self, obs: Tensor, action: Tensor | None = None, mask: Tensor | None = None) -> HeadOutput:
+    def forward(self, obs: Tensor, action: Tensor | None = None, *, mask: Tensor) -> HeadOutput:
         """Forward pass: produce command distribution and sample/evaluate.
 
         Args:
             obs: Observation tensor (B, obs_size)
             action: Optional command to evaluate (B,). If None, samples new action.
-            mask: Optional boolean mask where True = valid action (B, num_commands)
+            mask: Boolean mask where True = valid action (B, num_commands).
 
         Returns:
             HeadOutput with discrete command action
@@ -54,8 +54,7 @@ class CommandHead(ActionHead):
         logits = self.net(obs)
 
         # Apply action mask: set invalid actions to -inf
-        if mask is not None:
-            logits = logits.masked_fill(~mask, float("-inf"))
+        logits = logits.masked_fill(~mask, float("-inf"))
 
         dist = distributions.Categorical(logits=logits)
 
@@ -64,25 +63,35 @@ class CommandHead(ActionHead):
 
         return HeadOutput(action=action, log_prob=dist.log_prob(action), entropy=dist.entropy(), distribution=dist)
 
-    def get_deterministic_action(self, obs: Tensor, mask: Tensor | None = None) -> Tensor:
+    def get_deterministic_action(self, obs: Tensor, *, mask: Tensor) -> Tensor:
         """Get deterministic action (argmax) for evaluation.
 
         Args:
             obs: Observation tensor (B, obs_size)
-            mask: Optional boolean mask where True = valid action (B, num_commands)
+            mask: Boolean mask where True = valid action (B, num_commands).
 
         Returns:
             Command indices (B,)
         """
         logits = self.net(obs)
 
-        if mask is not None:
-            logits = logits.masked_fill(~mask, float("-inf"))
+        logits = logits.masked_fill(~mask, float("-inf"))
 
         return logits.argmax(dim=-1)
 
     def compute_loss(
-        self, new_log_prob: Tensor, old_log_prob: Tensor, advantages: Tensor, clip_epsilon: float
+        self, new_log_prob: Tensor, old_log_prob: Tensor, advantages: Tensor, clip_epsilon: float, mask: Tensor
     ) -> HeadLoss:
-        """Compute PPO-clipped policy loss for command head"""
-        return super().compute_loss(new_log_prob, old_log_prob, advantages, clip_epsilon)
+        """Compute PPO-clipped policy loss for command head.
+
+        Args:
+            new_log_prob: Log prob from current policy (B,)
+            old_log_prob: Log prob from behavior policy (B,)
+            advantages: Advantage estimates (B,)
+            clip_epsilon: PPO clipping parameter
+            mask: Float mask (B,).
+
+        Returns:
+            HeadLoss with loss tensor and metrics dict
+        """
+        return super().compute_loss(new_log_prob, old_log_prob, advantages, clip_epsilon, mask)

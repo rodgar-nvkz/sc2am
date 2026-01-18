@@ -1,18 +1,23 @@
 """Main ActorCritic model composing heads for hybrid action space.
 
+AlphaZero-style architecture: all action heads predict independently from
+observations, then masking is applied at loss computation time.
+
 This module provides the top-level ActorCritic class that:
 1. Produces discrete command actions via CommandHead
-2. Produces continuous angle actions via AngleHead (conditioned on command)
+2. Produces continuous angle actions via AngleHead (independent, not conditioned on command)
 3. Estimates state value via CriticHead
 
 The model supports:
 - Action masking for invalid commands
+- Proper masked entropy/log_prob for training (mask is REQUIRED)
 - Deterministic evaluation mode
 - Encapsulated loss computation in heads
 """
 
 from dataclasses import dataclass
 
+import torch
 from torch import Tensor, nn
 
 from .config import ModelConfig
@@ -27,37 +32,57 @@ class ActorCriticOutput:
     angle: HeadOutput
     value: Tensor
 
-    @property
-    def total_entropy(self) -> Tensor:
-        return self.command.entropy + self.angle.entropy
+    def total_entropy(self, move_mask: Tensor) -> Tensor:
+        """Compute total entropy with proper masking.
 
-    @property
-    def total_log_prob(self) -> Tensor:
-        return self.command.log_prob + self.angle.log_prob
+        Args:
+            move_mask: Float mask where 1.0 = MOVE command (B,). REQUIRED.
+
+        Returns:
+            Total entropy (B,) - angle entropy masked for non-MOVE commands
+        """
+        return self.command.entropy + self.angle.entropy * move_mask
+
+    def total_log_prob(self, move_mask: Tensor) -> Tensor:
+        """Compute total log probability with proper masking.
+
+        For importance sampling, the action taken when command != MOVE
+        is just the command itself, not (command, angle). So we should
+        only include angle_log_prob when command == MOVE.
+
+        Args:
+            move_mask: Float mask where 1.0 = MOVE command (B,).
+
+        Returns:
+            Total log prob (B,) - angle log_prob masked for non-MOVE commands
+        """
+        return self.command.log_prob + self.angle.log_prob * move_mask
 
 
 class ActorCritic(nn.Module):
-    """Autoregressive actor-critic for hybrid discrete-continuous action space.
+    """AlphaZero-style actor-critic for hybrid discrete-continuous action space.
 
     Action space:
     - Discrete command: MOVE, ATTACK_Z1, ATTACK_Z2
     - Continuous angle: (sin, cos) for movement direction (used when command=MOVE)
 
-    The angle head is conditioned on the discrete command via one-hot encoding.
-    This allows the network to learn command-specific angle distributions.
+    All heads predict independently from observations (no autoregressive conditioning).
+    Masking is applied at loss computation time:
+    - Command mask: game state constraints (cooldown, range)
+    - Angle mask: only train angle when MOVE was selected
 
-    P(action | obs) = P(command | obs) * P(angle | obs, command)
+    P(action | obs) = P(command | obs) * P(angle | obs)  [independent]
 
     Architecture:
         obs -> CommandHead -> command
             |
-            +-> AngleHead (obs + cmd_onehot) -> angle
+            +-> AngleHead -> angle
             |
             +-> CriticHead -> value
     """
 
     def __init__(self, config: ModelConfig):
-        """Initialize ActorCritic model"""
+        """Initialize ActorCritic model."""
         super().__init__()
         self.config = config
 
@@ -75,36 +100,36 @@ class ActorCritic(nn.Module):
         )
 
     def forward(
-        self,
-        obs: Tensor,
-        command: Tensor | None = None,
-        angle: Tensor | None = None,
-        action_mask: Tensor | None = None,
+        self, obs: Tensor, command: Tensor | None = None, angle: Tensor | None = None, *, action_mask: Tensor
     ) -> ActorCriticOutput:
-        """Forward pass through all components.
+        """Forward pass through all components (parallel prediction).
 
         Args:
-            obs: Observations (B, T)
+            obs: Observations (B, obs_size)
             command: Optional commands to evaluate (B,). If None, samples new.
             angle: Optional angles to evaluate (B, 2). If None, samples new.
-            action_mask: Optional boolean mask where True = valid action (B, num_commands)
+            action_mask: Boolean mask where True = valid action (B, num_commands).
 
+        Returns:
+            ActorCriticOutput with command, angle, and value outputs
         """
+        # All heads predict independently from obs
         command_output = self.command_head(obs=obs, action=command, mask=action_mask)
-        angle_output = self.angle_head(obs=obs, command=command_output.action, action=angle)
+        angle_output = self.angle_head(obs=obs, action=angle)
         value = self.value_head(obs=obs)
+
         return ActorCriticOutput(command=command_output, angle=angle_output, value=value)
 
     def get_value(self, obs: Tensor) -> Tensor:
-        """Get value estimate only (for V-trace computation)"""
+        """Get value estimate only (for V-trace computation)."""
         return self.value_head(obs=obs)
 
-    def get_deterministic_action(self, obs: Tensor, action_mask: Tensor | None = None) -> tuple[Tensor, Tensor]:
+    def get_deterministic_action(self, obs: Tensor, *, action_mask: Tensor) -> tuple[Tensor, Tensor]:
         """Get deterministic action for evaluation (argmax command, mean angle).
 
         Args:
             obs: Observations (B, obs_size)
-            action_mask: Optional boolean mask where True = valid action (B, num_commands)
+            action_mask: Boolean mask where True = valid action (B, num_commands). REQUIRED.
 
         Returns:
             Tuple of:
@@ -114,8 +139,8 @@ class ActorCritic(nn.Module):
         # Deterministic command (argmax)
         command = self.command_head.get_deterministic_action(obs=obs, mask=action_mask)
 
-        # Deterministic angle (mean of distribution)
-        angle = self.angle_head.get_deterministic_action(obs=obs, command=command)
+        # Deterministic angle (mean of distribution) - no command conditioning
+        angle = self.angle_head.get_deterministic_action(obs=obs)
 
         return command, angle
 
@@ -137,17 +162,20 @@ class ActorCritic(nn.Module):
             old_angle_log_prob: Behavior policy angle log probs (B,)
             advantages: Advantage estimates (B,)
             vtrace_targets: V-trace value targets (B,)
-            move_mask: Float mask where 1.0 = MOVE command (B,)
+            move_mask: Float mask where 1.0 = MOVE command (B,). REQUIRED.
             clip_epsilon: PPO clipping parameter
 
         Returns:
             Dictionary of HeadLoss for each head
         """
+        # Command head uses all samples (mask is required but ignored internally)
+        cmd_mask = torch.ones_like(move_mask)
         cmd_loss = self.command_head.compute_loss(
             new_log_prob=output.command.log_prob,
             old_log_prob=old_cmd_log_prob,
             advantages=advantages,
             clip_epsilon=clip_epsilon,
+            mask=cmd_mask,
         )
 
         angle_loss = self.angle_head.compute_loss(

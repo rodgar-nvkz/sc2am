@@ -148,7 +148,9 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
                 cmd_loss = losses["command"].loss
                 angle_loss = losses["angle"].loss
                 value_loss = losses["value"].loss
-                entropy = output.total_entropy.mean()
+
+                # Masked entropy: only count angle entropy for MOVE commands
+                entropy = output.total_entropy(move_mask).mean()
 
                 policy_loss = cmd_loss + angle_loss
                 loss = policy_loss + config.value_coef * value_loss - config.entropy_coef * entropy

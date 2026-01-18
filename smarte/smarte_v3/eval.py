@@ -9,7 +9,7 @@ from loguru import logger
 
 from smarte.settings import PROJECT_ROOT
 
-from .env import NUM_COMMANDS, OBS_SIZE, SC2GymEnv
+from .env import SC2GymEnv
 from .model import ActorCritic, ModelConfig
 
 
@@ -46,9 +46,9 @@ def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level
                 obs_tensor = torch.from_numpy(obs).unsqueeze(0)
                 mask_tensor = torch.from_numpy(action_mask).unsqueeze(0)
                 # Use deterministic action for evaluation (with action masking)
-                command, angle = model.get_deterministic_action(obs_tensor, mask_tensor)
+                command, angle = model.get_deterministic_action(obs_tensor, action_mask=mask_tensor)
 
-            action = {'command': command.squeeze(0).item(), 'angle': angle.squeeze(0).numpy()}
+            action = {"command": command.squeeze(0).item(), "angle": angle.squeeze(0).numpy()}
             obs, reward, terminated, truncated, info = env.step(action)
             action_mask = info["action_mask"]
             done = terminated or truncated

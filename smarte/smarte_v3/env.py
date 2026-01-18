@@ -56,8 +56,8 @@ MAX_EPISODE_STEPS = 22.4 * 30  # 30 realtime seconds
 # Spawn configuration
 SPAWN_AREA_MIN = 0.0 + 15
 SPAWN_AREA_MAX = 32.0 - 15
-MIN_SPAWN_DISTANCE = 5.0
-MAX_SPAWN_DISTANCE = 8.0
+MIN_SPAWN_DISTANCE = 6.0
+MAX_SPAWN_DISTANCE = 6.0
 
 # Number of zerglings
 NUM_ZERGLINGS = 2
@@ -68,6 +68,7 @@ NUM_ZERGLINGS = 2
 # Per zergling (x2): distance (1), health (1), angle_sin (1), angle_cos (1) = 4
 # Total: 1 + 3 + 4*2 = 12
 OBS_SIZE = 12
+
 
 @dataclass
 class UnitState:
@@ -122,10 +123,12 @@ class SC2GymEnv(gym.Env):
         self.params = params or {}
 
         # Hybrid action space: discrete command + continuous angle
-        self.action_space = spaces.Dict({
-            'command': spaces.Discrete(NUM_COMMANDS),
-            'angle': spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),  # sin, cos
-        })
+        self.action_space = spaces.Dict(
+            {
+                "command": spaces.Discrete(NUM_COMMANDS),
+                "angle": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),  # sin, cos
+            }
+        )
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(OBS_SIZE,), dtype=np.float32)
 
         self.game = SC2SingleGame([Terran, Zerg]).launch()
@@ -280,8 +283,8 @@ class SC2GymEnv(gym.Env):
 
     def _agent_action(self, action: dict) -> None:
         """Execute hybrid action: discrete command + continuous angle."""
-        command = action['command']
-        angle_sincos = action['angle']
+        command = action["command"]
+        angle_sincos = action["angle"]
 
         logger.debug(f"Agent action: command={command}, angle_sincos={angle_sincos}")
 
@@ -312,7 +315,9 @@ class SC2GymEnv(gym.Env):
         mask[ACTION_ATTACK_Z2] = len(zerglings) > 1 and marine and zerglings[1].distance_to(marine) < 6
         return mask
 
-    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> tuple[np.ndarray, dict[str, Any]]:
         self.current_step = 0
         self.terminated = False
         self.clean_battlefield()

@@ -11,6 +11,10 @@ class ModelConfig:
     - Run ablation experiments (toggle features)
     - Scale up/down network sizes
     - Add new modalities (terrain, etc.)
+
+    Architecture: AlphaZero-style parallel prediction with masking.
+    All action heads predict independently from observations, then
+    invalid/unused actions are masked at loss computation time.
     """
 
     # Observation space
@@ -33,10 +37,9 @@ class ModelConfig:
 
     @property
     def head_input_size(self) -> int:
-        """Size of input to action/value heads."""
-        return self.obs_size
+        """Size of input to all heads (command, angle, value).
 
-    @property
-    def angle_head_input_size(self) -> int:
-        """Size of input to angle head (includes one-hot command)."""
-        return self.head_input_size + self.num_commands
+        All heads now use the same input size - just the observation.
+        No command conditioning for angle head (AlphaZero-style parallel prediction).
+        """
+        return self.obs_size
