@@ -13,7 +13,7 @@ from .env import SC2GymEnv
 from .model import ActorCritic, ModelConfig
 
 
-def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level: int = 0):
+def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level: int = 1):
     """Evaluate a trained model with hybrid action space."""
     device = torch.device("cpu")
 
@@ -31,7 +31,7 @@ def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level
     wins = 0
     total_rewards = []
     total_lengths = []
-    env = SC2GymEnv({"upgrade_level": [upgrade_level], "game_steps_per_env": 1})
+    env = SC2GymEnv({"upgrade_level": [upgrade_level], "game_steps_per_env": 2})
 
     logger.info(f"\nEvaluating for {num_games} games...")
     for game in range(num_games):

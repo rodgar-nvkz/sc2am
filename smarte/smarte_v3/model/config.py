@@ -32,7 +32,7 @@ class ModelConfig:
     # Weight initialization
     init_orthogonal: bool = True
     init_gain: float = 1.41421356  # sqrt(2)
-    policy_init_gain: float = 0.01
+    policy_init_gain: float = 0.05
     value_init_gain: float = 1.0
 
     @property

@@ -13,7 +13,6 @@ class IMPALAConfig:
     # Batch settings
     num_workers: int = 8
     episodes_per_batch: int = 16  # Collect this many complete episodes before training
-    max_episode_steps: int = 1024  # Safety limit (game usually ends in ~200-600)
 
     # Training settings
     total_episodes: int = 10_000  # Train for this many episodes
@@ -33,10 +32,10 @@ class IMPALAConfig:
     max_grad_norm: float = 40.0
 
     # Optimizer
-    lr: float = 5e-4
+    lr: float = 5e-3
     lr_eps: float = 1e-4
     lr_start_factor: float = 1.0
-    lr_end_factor: float = 0.2
+    lr_end_factor: float = 0.1
 
     # Environment
     upgrade_levels: list = dataclasses.field(default_factory=list)

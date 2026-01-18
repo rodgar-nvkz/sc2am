@@ -158,13 +158,10 @@ def compute_vtrace_episode(
     """
     T = len(rewards)
 
-    # TD targets: standard TD(0) since episode is complete
-    # V_target[t] = r[t] + gamma * V_target[t+1], with V_target[T] = 0
-    vtrace_targets = np.zeros(T, dtype=np.float32)
+    next_value = 0.0  # Always starts from Terminal state
     advantages = np.zeros(T, dtype=np.float32)
+    vtrace_targets = np.zeros(T, dtype=np.float32)
 
-    # Backward pass
-    next_value = 0.0  # Terminal state
     for t in reversed(range(T)):
         vtrace_targets[t] = rewards[t] + gamma * next_value
         advantages[t] = vtrace_targets[t] - values[t]
@@ -210,7 +207,6 @@ def collector_worker(
                 model=model,
                 worker_id=worker_id,
                 weight_version=local_version,
-                max_steps=config.max_episode_steps,
             )
 
             try:
@@ -229,7 +225,7 @@ def collector_worker(
         traceback.print_exc()
 
 
-def collect_episode(env, model: ActorCritic, worker_id: int, weight_version: int, max_steps: int = 1024) -> Episode:
+def collect_episode(env, model: ActorCritic, worker_id: int, weight_version: int) -> Episode:
     """Collect a single complete episode."""
 
     # Use lists for variable-length episode
@@ -251,7 +247,7 @@ def collect_episode(env, model: ActorCritic, worker_id: int, weight_version: int
     obs_tensor = torch.empty(1, obs.shape[0], dtype=torch.float32)
 
     with torch.inference_mode():
-        while not done and steps < max_steps:
+        while not done:
             observations.append(obs)
             action_masks.append(action_mask)
 
@@ -260,14 +256,17 @@ def collect_episode(env, model: ActorCritic, worker_id: int, weight_version: int
             mask_tensor = torch.from_numpy(action_mask).unsqueeze(0)
             output = model(obs_tensor, action_mask=mask_tensor)
 
-            commands.append(output.command.action.item())
-            angles.append(output.angle.action.squeeze(0).numpy())
+            cmd = output.command.action.item()
+            angle = output.angle.action.squeeze(0).numpy()
+
+            commands.append(cmd)
+            angles.append(angle)
             cmd_log_probs.append(output.command.log_prob.item())
             angle_log_probs.append(output.angle.log_prob.item())
             values.append(output.value.item())
 
             # Step environment
-            action = {"command": output.command.action.item(), "angle": output.angle.action.squeeze(0).numpy()}
+            action = {"command": cmd, "angle": angle}
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 

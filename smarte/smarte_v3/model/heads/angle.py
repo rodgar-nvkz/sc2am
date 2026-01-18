@@ -9,7 +9,6 @@ Masking is applied at loss computation time, not during forward pass.
 """
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor, distributions, nn
 
 from ..config import ModelConfig
@@ -52,10 +51,7 @@ class AngleHead(ActionHead):
                 nn.init.orthogonal_(module.weight, gain=self.config.init_gain)
                 nn.init.constant_(module.bias, 0.0)
 
-        # Smaller init for output layer
-        output_layer = self.net[-1]
-        assert isinstance(output_layer, nn.Linear)
-        nn.init.orthogonal_(output_layer.weight, gain=self.config.policy_init_gain)
+        # Use standard gain for output layer also
 
     def forward(self, obs: Tensor, action: Tensor | None = None) -> HeadOutput:
         """Forward pass: produce angle distribution and sample/evaluate.
@@ -67,18 +63,17 @@ class AngleHead(ActionHead):
         Returns:
             HeadOutput with continuous angle action (normalized sin, cos)
         """
+        # Output raw direction - no normalization!
+        # Normalization was causing gradient issues (KL stayed ~0 despite non-zero gradients)
+        # The environment will normalize for movement; here we just need consistent gradients
         mean = self.net(obs)
-
-        # Normalize mean to unit circle for stability
-        mean = F.normalize(mean, dim=-1)
 
         std = self.log_std.exp()
         dist = distributions.Normal(mean, std)
 
         if action is None:
+            # Normalizing after sampling breaks the log_prob gradient relationship
             action = dist.sample()
-            # Normalize sampled action to unit circle
-            action = F.normalize(action, dim=-1)
 
         # Log prob: sum over sin/cos dimensions
         log_prob = dist.log_prob(action).sum(dim=-1)
@@ -93,10 +88,9 @@ class AngleHead(ActionHead):
             obs: Raw observation (B, obs_size)
 
         Returns:
-            Normalized angle (sin, cos) tensor (B, 2)
+            Raw angle (sin, cos) tensor (B, 2)
         """
-        mean = self.net(obs)
-        return F.normalize(mean, dim=-1)
+        return self.net(obs)
 
     def compute_loss(
         self,

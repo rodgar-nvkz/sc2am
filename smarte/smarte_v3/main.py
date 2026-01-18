@@ -149,9 +149,9 @@ def train(
             # Convert to tensors
             tensors = batch.to_tensors(device)
 
-            # Normalize advantages
+            # Normalize advantages - only scale by std, do NOT center, ruins angle head!
             advantages = tensors["advantages"]
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            advantages = advantages / (advantages.std() + 1e-8)
 
             # Precompute move mask for angle loss
             move_mask = (tensors["commands"] == ACTION_MOVE).float()
@@ -285,6 +285,7 @@ def train(
 
 logger.remove()
 logger.add(sys.stderr, level="INFO")
+torch.set_float32_matmul_precision("high")
 
 
 def main():
@@ -308,7 +309,8 @@ def main():
     if args.command == "train":
         train(total_episodes=args.episodes, num_workers=args.workers, seed=args.seed, resume=args.resume)
     elif args.command == "eval":
-        eval_model(num_games=args.games, model_path=args.model)
+        eval_model(num_games=args.games, model_path=args.model, upgrade_level=1)
+        eval_model(num_games=args.games, model_path=args.model, upgrade_level=0)
     else:
         parser.print_help()
 

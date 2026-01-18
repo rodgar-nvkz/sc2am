@@ -35,6 +35,7 @@ UNIT_ZERGLING = 105
 # Unit stats (for normalization)
 MARINE_MAX_HP = 45.0
 MARINE_RANGE = 5.0
+MARINGE_SIGHT = 9.0
 MARINE_SPEED = 3.15
 
 ZERGLING_MAX_HP = 35.0
@@ -56,7 +57,7 @@ MAX_EPISODE_STEPS = 22.4 * 30  # 30 realtime seconds
 # Spawn configuration
 SPAWN_AREA_MIN = 0.0 + 15
 SPAWN_AREA_MAX = 32.0 - 15
-MIN_SPAWN_DISTANCE = 12.0
+MIN_SPAWN_DISTANCE = 8.0
 MAX_SPAWN_DISTANCE = 12.0
 
 # Number of zerglings
@@ -133,7 +134,7 @@ class SC2GymEnv(gym.Env):
 
         self.game = SC2SingleGame([Terran, Zerg]).launch()
         self.client = self.game.clients[0]
-        self.units: dict[int, list] = defaultdict(list)
+        self.units: dict[int, list[UnitState]] = defaultdict(list)
         self.current_step: int = 0
         self.terminated: bool = False
 
@@ -268,14 +269,12 @@ class SC2GymEnv(gym.Env):
         if self.current_step >= MAX_EPISODE_STEPS:
             return -1
 
-        if not self.units[2]:
-            return 1
-
-        if not self.units[1]:
+        if not self.units[2] or not self.units[1]:
             ally_health = sum([u.health / u.health_max for u in self.units[1]], 0.0) / 1.0
             enemy_max_health = ZERGLING_MAX_HP * 2
             enemy_health_left = sum([u.health for u in self.units[2]], 0.0)
-            return ally_health - (enemy_health_left / enemy_max_health)
+            diff = 1 + ally_health - (enemy_health_left / enemy_max_health)
+            return diff
 
         return 0
 
@@ -284,15 +283,17 @@ class SC2GymEnv(gym.Env):
         command = action["command"]
         angle_sincos = action["angle"]
 
-        logger.debug(f"Agent action: command={command}, angle_sincos={angle_sincos}")
-
         marine = self.units[1][0]
         zerglings = self.units[2]
 
         if command == ACTION_MOVE:
-            dy, dx = angle_sincos
+            # Normalize angle to unit circle (model outputs raw values for correct gradients)
+            raw_dy, raw_dx = angle_sincos
+            magnitude = math.sqrt(raw_dx**2 + raw_dy**2)
+            dx, dy = raw_dx / magnitude, raw_dy / magnitude
             target_x = marine.x + dx * MOVE_STEP_SIZE
             target_y = marine.y + dy * MOVE_STEP_SIZE
+
             self.client.unit_move(marine.tag, (target_x, target_y))
         elif command == ACTION_ATTACK_Z1:
             if len(zerglings) > 0:
@@ -308,9 +309,13 @@ class SC2GymEnv(gym.Env):
         mask = np.ones(NUM_COMMANDS, dtype=bool)
         marine = self.units[1][0] if self.units[1] else None
         zerglings = self.units[2]
+        if not marine:
+            return mask
+
         # alive and in attack range
-        mask[ACTION_ATTACK_Z1] = len(zerglings) > 0 and marine and zerglings[0].distance_to(marine) < 6
-        mask[ACTION_ATTACK_Z2] = len(zerglings) > 1 and marine and zerglings[1].distance_to(marine) < 6
+        ready = marine.weapon_cooldown == 0
+        mask[ACTION_ATTACK_Z1] = len(zerglings) > 0 and ready and zerglings[0].distance_to(marine) < MARINGE_SIGHT
+        mask[ACTION_ATTACK_Z2] = len(zerglings) > 1 and ready and zerglings[1].distance_to(marine) < MARINGE_SIGHT
         return mask
 
     def reset(
@@ -331,10 +336,11 @@ class SC2GymEnv(gym.Env):
             self.current_step += self.game_steps_per_env
 
         self.observe_units()
+        won = len(self.units[2]) == 0
         obs = self._compute_observation()
         reward = self._compute_reward()
         truncated = self.current_step >= MAX_EPISODE_STEPS
-        return obs, reward, self.terminated, truncated, {"won": reward > 0, "action_mask": self.get_action_mask()}
+        return obs, reward, self.terminated, truncated, {"won": won, "action_mask": self.get_action_mask()}
 
     def close(self) -> None:
         self.game.close()
