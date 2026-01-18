@@ -12,7 +12,7 @@ class CriticHead(nn.Module):
     """Value head for estimating state value V(s).
 
     Used by the critic to estimate expected returns from a state.
-    Receives both encoded features and raw observations (skip connection).
+    Receives raw observations directly.
     """
 
     def __init__(self, config: ModelConfig):
@@ -41,25 +41,16 @@ class CriticHead(nn.Module):
         assert isinstance(self.net[-1].weight, torch.Tensor)
         nn.init.orthogonal_(self.net[-1].weight, gain=self.config.value_init_gain)
 
-    def forward(self, features: Tensor, raw_obs: Tensor) -> Tensor:
+    def forward(self, obs: Tensor) -> Tensor:
         """Forward pass: estimate state value.
 
         Args:
-            features: Encoded features from encoder (B, embed_size)
-            raw_obs: Raw observation for skip connection (B, obs_size)
+            obs: Raw observation (B, obs_size)
 
         Returns:
             Value estimates (B,)
         """
-        # Build input based on config
-        if self.config.use_embedding and self.config.use_skip_connections:
-            x = torch.cat([features, raw_obs], dim=-1)
-        elif self.config.use_embedding:
-            x = features
-        else:
-            x = raw_obs
-
-        return self.net(x).squeeze(-1)
+        return self.net(obs).squeeze(-1)
 
     def compute_loss(
         self,
@@ -84,9 +75,7 @@ class CriticHead(nn.Module):
         """
         if clip_epsilon is not None and old_values is not None:
             # Clipped value loss (PPO-style)
-            value_clipped = old_values + torch.clamp(
-                values - old_values, -clip_epsilon, clip_epsilon
-            )
+            value_clipped = old_values + torch.clamp(values - old_values, -clip_epsilon, clip_epsilon)
             loss_unclipped = F.smooth_l1_loss(values, targets, reduction="none")
             loss_clipped = F.smooth_l1_loss(value_clipped, targets, reduction="none")
             loss = torch.max(loss_unclipped, loss_clipped).mean()
@@ -103,10 +92,5 @@ class CriticHead(nn.Module):
             else:
                 explained_var = float("nan")
 
-        return HeadLoss(
-            loss=loss,
-            metrics={
-                "loss": loss.item(),
-                "explained_variance": explained_var,
-            },
-        )
+        metrics = {"loss": loss.item(), "explained_variance": explained_var}
+        return HeadLoss(loss=loss, metrics=metrics)

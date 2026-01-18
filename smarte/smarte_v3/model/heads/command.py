@@ -1,6 +1,5 @@
 """Command head for discrete action selection."""
 
-import torch
 from torch import Tensor, distributions, nn
 
 from ..config import ModelConfig
@@ -37,35 +36,22 @@ class CommandHead(ActionHead):
                 nn.init.constant_(module.bias, 0.0)
 
         # Smaller init for output layer
-        nn.init.orthogonal_(self.net[-1].weight, gain=self.config.policy_init_gain)
+        output_layer = self.net[-1]
+        assert isinstance(output_layer, nn.Linear)
+        nn.init.orthogonal_(output_layer.weight, gain=self.config.policy_init_gain)
 
-    def forward(
-        self,
-        features: Tensor,
-        raw_obs: Tensor,
-        action: Tensor | None = None,
-        mask: Tensor | None = None,
-    ) -> HeadOutput:
+    def forward(self, obs: Tensor, action: Tensor | None = None, mask: Tensor | None = None) -> HeadOutput:
         """Forward pass: produce command distribution and sample/evaluate.
 
         Args:
-            features: Encoded features from encoder (B, embed_size)
-            raw_obs: Raw observation for skip connection (B, obs_size)
+            obs: Observation tensor (B, obs_size)
             action: Optional command to evaluate (B,). If None, samples new action.
             mask: Optional boolean mask where True = valid action (B, num_commands)
 
         Returns:
             HeadOutput with discrete command action
         """
-        # Build input based on config
-        if self.config.use_embedding and self.config.use_skip_connections:
-            x = torch.cat([features, raw_obs], dim=-1)
-        elif self.config.use_embedding:
-            x = features
-        else:
-            x = raw_obs
-
-        logits = self.net(x)
+        logits = self.net(obs)
 
         # Apply action mask: set invalid actions to -inf
         if mask is not None:
@@ -76,37 +62,19 @@ class CommandHead(ActionHead):
         if action is None:
             action = dist.sample()
 
-        return HeadOutput(
-            action=action,
-            log_prob=dist.log_prob(action),
-            entropy=dist.entropy(),
-            distribution=dist,
-        )
+        return HeadOutput(action=action, log_prob=dist.log_prob(action), entropy=dist.entropy(), distribution=dist)
 
-    def get_deterministic_action(
-        self,
-        features: Tensor,
-        raw_obs: Tensor,
-        mask: Tensor | None = None,
-    ) -> Tensor:
+    def get_deterministic_action(self, obs: Tensor, mask: Tensor | None = None) -> Tensor:
         """Get deterministic action (argmax) for evaluation.
 
         Args:
-            features: Encoded features from encoder (B, embed_size)
-            raw_obs: Raw observation for skip connection (B, obs_size)
+            obs: Observation tensor (B, obs_size)
             mask: Optional boolean mask where True = valid action (B, num_commands)
 
         Returns:
             Command indices (B,)
         """
-        if self.config.use_embedding and self.config.use_skip_connections:
-            x = torch.cat([features, raw_obs], dim=-1)
-        elif self.config.use_embedding:
-            x = features
-        else:
-            x = raw_obs
-
-        logits = self.net(x)
+        logits = self.net(obs)
 
         if mask is not None:
             logits = logits.masked_fill(~mask, float("-inf"))
@@ -114,14 +82,7 @@ class CommandHead(ActionHead):
         return logits.argmax(dim=-1)
 
     def compute_loss(
-        self,
-        new_log_prob: Tensor,
-        old_log_prob: Tensor,
-        advantages: Tensor,
-        clip_epsilon: float,
+        self, new_log_prob: Tensor, old_log_prob: Tensor, advantages: Tensor, clip_epsilon: float
     ) -> HeadLoss:
-        """Compute PPO-clipped policy loss for command head.
-
-        Uses the default PPO clipping implementation from base class.
-        """
+        """Compute PPO-clipped policy loss for command head"""
         return super().compute_loss(new_log_prob, old_log_prob, advantages, clip_epsilon)

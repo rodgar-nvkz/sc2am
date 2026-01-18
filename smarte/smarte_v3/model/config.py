@@ -19,22 +19,11 @@ class ModelConfig:
     # Action space
     num_commands: int = 3  # MOVE, ATTACK_Z1, ATTACK_Z2
 
-    # Encoder settings
-    embed_size: int = 64
-    encoder_hidden_size: int = 64
-    encoder_num_layers: int = 2
-    encoder_activation: str = "tanh"
-
     # Head settings
     head_hidden_size: int = 32
-    cmd_embed_size: int = 16  # Command embedding for angle head conditioning
 
     # Continuous action settings
     angle_init_log_std: float = -0.5
-
-    # Feature flags for ablation
-    use_embedding: bool = True
-    use_skip_connections: bool = True
 
     # Weight initialization
     init_orthogonal: bool = True
@@ -45,17 +34,9 @@ class ModelConfig:
     @property
     def head_input_size(self) -> int:
         """Size of input to action/value heads."""
-        size = 0
-        if self.use_embedding:
-            size += self.embed_size
-        if self.use_skip_connections:
-            size += self.obs_size
-        # If neither, fall back to raw obs
-        if size == 0:
-            size = self.obs_size
-        return size
+        return self.obs_size
 
     @property
     def angle_head_input_size(self) -> int:
-        """Size of input to angle head (includes command embedding)."""
-        return self.head_input_size + self.cmd_embed_size
+        """Size of input to angle head (includes one-hot command)."""
+        return self.head_input_size + self.num_commands

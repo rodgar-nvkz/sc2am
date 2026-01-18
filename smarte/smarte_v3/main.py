@@ -70,7 +70,9 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
     # Optimizer and LR scheduler
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, eps=1e-4)
     total_updates = total_episodes // config.episodes_per_batch
-    lr_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, config.lr_start_factor, config.lr_end_factor, total_updates)
+    lr_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, config.lr_start_factor, config.lr_end_factor, total_updates
+    )
 
     # Tracking
     update_count = 0
@@ -81,6 +83,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
 
     print(f"\nStarting IMPALA training for {total_episodes:,} episodes...")
     print(f"Episodes per batch: {config.episodes_per_batch}, Workers: {num_workers}")
+    print(f"Model total parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     try:
         while collected_episodes < total_episodes:

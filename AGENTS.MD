@@ -21,6 +21,8 @@ Notes:
 - Since in this particular env\problem we are able to provide better intermidiate rewards, we will not in more complex scenarios. Our aim is not to solve concrete problem, but find a way to learn a model which might learn to solve complex scenarious on their own with a win/lose final signal and DPS signal during gameplay. Agent should be able to realise what muktiple DPS signals (e.g. burst in one case vs sustained damage in another) leads to the win avoiding local optimas.
 - We would like to avoid adding more handcrafted features into the obs, keeping only raw game ones, since feature mining is also not possible for complex scenarious.
 
+## Code formatting
+- Always use one line functions and methods parameters even for a long one, linter will do the rest.
 
 ## Tech Stack
 - Python 3.14+

@@ -1,13 +1,11 @@
-"""Main ActorCritic model composing encoders and heads.
+"""Main ActorCritic model composing heads for hybrid action space.
 
 This module provides the top-level ActorCritic class that:
-1. Encodes observations using VectorEncoder (and future terrain CNN)
-2. Produces discrete command actions via CommandHead
-3. Produces continuous angle actions via AngleHead (conditioned on command)
-4. Estimates state value via CriticHead
+1. Produces discrete command actions via CommandHead
+2. Produces continuous angle actions via AngleHead (conditioned on command)
+3. Estimates state value via CriticHead
 
 The model supports:
-- Skip connections (raw obs directly to heads)
 - Action masking for invalid commands
 - Deterministic evaluation mode
 - Encapsulated loss computation in heads
@@ -15,39 +13,26 @@ The model supports:
 
 from dataclasses import dataclass
 
-import torch
 from torch import Tensor, nn
 
 from .config import ModelConfig
-from .encoders import VectorEncoder
 from .heads import AngleHead, CommandHead, CriticHead, HeadLoss, HeadOutput
 
 
 @dataclass
 class ActorCriticOutput:
-    """Complete output from ActorCritic forward pass.
+    """Complete output from ActorCritic forward pass"""
 
-    Contains outputs from all heads plus shared information.
-    """
-
-    # Command head output
     command: HeadOutput
-
-    # Angle head output
     angle: HeadOutput
-
-    # Value estimate
     value: Tensor
 
-    # Convenience properties
     @property
     def total_entropy(self) -> Tensor:
-        """Total entropy (command + angle)."""
         return self.command.entropy + self.angle.entropy
 
     @property
     def total_log_prob(self) -> Tensor:
-        """Total log probability (command + angle)."""
         return self.command.log_prob + self.angle.log_prob
 
 
@@ -58,58 +43,36 @@ class ActorCritic(nn.Module):
     - Discrete command: MOVE, ATTACK_Z1, ATTACK_Z2
     - Continuous angle: (sin, cos) for movement direction (used when command=MOVE)
 
-    The angle head is conditioned on the discrete command via embedding.
+    The angle head is conditioned on the discrete command via one-hot encoding.
     This allows the network to learn command-specific angle distributions.
 
     P(action | obs) = P(command | obs) * P(angle | obs, command)
 
     Architecture:
-        obs -> VectorEncoder -> features
-                                   |
-                                   +-> CommandHead (features + raw_obs) -> command
-                                   |
-                                   +-> AngleHead (features + raw_obs + cmd_embed) -> angle
-                                   |
-                                   +-> CriticHead (features + raw_obs) -> value
+        obs -> CommandHead -> command
+            |
+            +-> AngleHead (obs + cmd_onehot) -> angle
+            |
+            +-> CriticHead -> value
     """
 
     def __init__(self, config: ModelConfig):
-        """Initialize ActorCritic model.
-
-        Args:
-            config: Model configuration defining architecture.
-        """
+        """Initialize ActorCritic model"""
         super().__init__()
         self.config = config
-
-        # Build components
-        self.encoder = VectorEncoder(config) if config.use_embedding else None
 
         self.command_head = CommandHead(config)
         self.angle_head = AngleHead(config)
         self.value_head = CriticHead(config)
 
         # Expose heads as ModuleDict for easy iteration
-        self.heads = nn.ModuleDict({
-            "command": self.command_head,
-            "angle": self.angle_head,
-            "value": self.value_head,
-        })
-
-    def _encode(self, obs: Tensor) -> Tensor:
-        """Encode observation to features.
-
-        Args:
-            obs: Raw observation (B, obs_size)
-
-        Returns:
-            Encoded features (B, embed_size) or zeros if no encoder
-        """
-        if self.encoder is not None:
-            return self.encoder(obs)
-        else:
-            # Return zeros if no encoder (heads will use raw_obs via skip connection)
-            return torch.zeros(obs.shape[0], self.config.embed_size, device=obs.device)
+        self.heads = nn.ModuleDict(
+            {
+                "command": self.command_head,
+                "angle": self.angle_head,
+                "value": self.value_head,
+            }
+        )
 
     def forward(
         self,
@@ -121,55 +84,22 @@ class ActorCritic(nn.Module):
         """Forward pass through all components.
 
         Args:
-            obs: Observations (B, obs_size)
+            obs: Observations (B, T)
             command: Optional commands to evaluate (B,). If None, samples new.
             angle: Optional angles to evaluate (B, 2). If None, samples new.
             action_mask: Optional boolean mask where True = valid action (B, num_commands)
 
-        Returns:
-            ActorCriticOutput with all head outputs and value
         """
-        # Encode observation
-        features = self._encode(obs)
-
-        # Command head
-        cmd_output = self.command_head(
-            features=features,
-            raw_obs=obs,
-            action=command,
-            mask=action_mask,
-        )
-
-        # Angle head (conditioned on command)
-        angle_output = self.angle_head(
-            features=features,
-            raw_obs=obs,
-            command=cmd_output.action,
-            action=angle,
-        )
-
-        # Value head
-        value = self.value_head(features=features, raw_obs=obs)
-
-        return ActorCriticOutput(command=cmd_output, angle=angle_output, value=value)
+        command_output = self.command_head(obs=obs, action=command, mask=action_mask)
+        angle_output = self.angle_head(obs=obs, command=command_output.action, action=angle)
+        value = self.value_head(obs=obs)
+        return ActorCriticOutput(command=command_output, angle=angle_output, value=value)
 
     def get_value(self, obs: Tensor) -> Tensor:
-        """Get value estimate only (for V-trace computation).
+        """Get value estimate only (for V-trace computation)"""
+        return self.value_head(obs=obs)
 
-        Args:
-            obs: Observations (B, obs_size)
-
-        Returns:
-            Value estimates (B,)
-        """
-        features = self._encode(obs)
-        return self.value_head(features=features, raw_obs=obs)
-
-    def get_deterministic_action(
-        self,
-        obs: Tensor,
-        action_mask: Tensor | None = None,
-    ) -> tuple[Tensor, Tensor]:
+    def get_deterministic_action(self, obs: Tensor, action_mask: Tensor | None = None) -> tuple[Tensor, Tensor]:
         """Get deterministic action for evaluation (argmax command, mean angle).
 
         Args:
@@ -181,13 +111,11 @@ class ActorCritic(nn.Module):
             - command: (B,) discrete command indices
             - angle: (B, 2) normalized sin/cos angle
         """
-        features = self._encode(obs)
-
         # Deterministic command (argmax)
-        command = self.command_head.get_deterministic_action(features=features, raw_obs=obs, mask=action_mask)
+        command = self.command_head.get_deterministic_action(obs=obs, mask=action_mask)
 
         # Deterministic angle (mean of distribution)
-        angle = self.angle_head.get_deterministic_action(features=features, raw_obs=obs, command=command)
+        angle = self.angle_head.get_deterministic_action(obs=obs, command=command)
 
         return command, angle
 

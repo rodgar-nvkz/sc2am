@@ -1,5 +1,6 @@
 """Base classes for action and value heads."""
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,27 +38,23 @@ class HeadLoss:
     metrics: dict[str, float]
 
 
-class ActionHead(nn.Module):
+class ActionHead(nn.Module, ABC):
     """Base class for action heads (discrete and continuous).
 
     Action heads are responsible for:
-    1. Producing a distribution over actions given features
+    1. Producing a distribution over actions given observations
     2. Sampling from or evaluating actions
     3. Computing policy gradient loss (PPO-style)
     """
 
-    def forward(self, features: Tensor, raw_obs: Tensor, **kwargs) -> HeadOutput:
+    @abstractmethod
+    def forward(self, *args, **kwargs) -> HeadOutput:
         """Forward pass: produce action distribution and sample/evaluate.
-
-        Args:
-            features: Encoded features from encoder (B, embed_size)
-            raw_obs: Raw observation for skip connection (B, obs_size)
-            **kwargs: Head-specific arguments (action, mask, etc.)
 
         Returns:
             HeadOutput with action, log_prob, entropy, distribution
         """
-        raise NotImplementedError
+        ...
 
     def compute_loss(
         self,
@@ -90,11 +87,5 @@ class ActionHead(nn.Module):
             approx_kl = (old_log_prob - new_log_prob).mean().item()
             clip_fraction = ((ratio - 1.0).abs() > clip_epsilon).float().mean().item()
 
-        return HeadLoss(
-            loss=loss,
-            metrics={
-                "loss": loss.item(),
-                "approx_kl": approx_kl,
-                "clip_fraction": clip_fraction,
-            },
-        )
+        metrics = {"loss": loss.item(), "approx_kl": approx_kl, "clip_fraction": clip_fraction}
+        return HeadLoss(loss=loss, metrics=metrics)

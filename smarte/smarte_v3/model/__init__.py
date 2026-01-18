@@ -3,7 +3,6 @@
 Modular, scalable architecture for RL models:
 
 - config: ModelConfig dataclass for all architectural parameters
-- encoders: Observation encoders (VectorEncoder, future TerrainCNN)
 - heads: Action and value heads (CommandHead, AngleHead, CriticHead)
 - actor_critic: Main ActorCritic model composing all components
 
@@ -19,7 +18,6 @@ Example:
 
 from .actor_critic import ActorCritic, ActorCriticOutput
 from .config import ModelConfig
-from .encoders import VectorEncoder
 from .heads import (
     ActionHead,
     AngleHead,
@@ -35,8 +33,6 @@ __all__ = [
     "ActorCriticOutput",
     # Config
     "ModelConfig",
-    # Encoders
-    "VectorEncoder",
     # Heads
     "ActionHead",
     "AngleHead",

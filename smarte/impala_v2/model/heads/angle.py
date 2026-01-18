@@ -34,9 +34,7 @@ class AngleHead(ActionHead):
         )
 
         # Learnable log std (shared across all states)
-        self.log_std = nn.Parameter(
-            torch.tensor([config.angle_init_log_std, config.angle_init_log_std])
-        )
+        self.log_std = nn.Parameter(torch.tensor([config.angle_init_log_std, config.angle_init_log_std]))
 
         self._init_weights()
 
@@ -50,7 +48,7 @@ class AngleHead(ActionHead):
                 nn.init.orthogonal_(module.weight, gain=self.config.init_gain)
                 nn.init.constant_(module.bias, 0.0)
 
-        # Smaller init for output layer
+        assert isinstance(self.net[-1].weight, nn.Parameter)
         nn.init.orthogonal_(self.net[-1].weight, gain=self.config.policy_init_gain)
 
         # Initialize command embeddings
@@ -67,13 +65,7 @@ class AngleHead(ActionHead):
         else:
             return torch.cat([raw_obs, cmd_emb], dim=-1)
 
-    def forward(
-        self,
-        features: Tensor,
-        raw_obs: Tensor,
-        command: Tensor,
-        action: Tensor | None = None,
-    ) -> HeadOutput:
+    def forward(self, features: Tensor, raw_obs: Tensor, command: Tensor, action: Tensor | None = None) -> HeadOutput:  # pyright: ignore
         """Forward pass: produce angle distribution and sample/evaluate.
 
         Args:
@@ -157,11 +149,7 @@ class AngleHead(ActionHead):
         if mask is not None:
             # Masked loss: only compute for MOVE commands
             surr1 = ratio * advantages * mask
-            surr2 = (
-                torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon)
-                * advantages
-                * mask
-            )
+            surr2 = torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon) * advantages * mask
             num_moves = mask.sum().clamp(min=1.0)
             loss = -torch.min(surr1, surr2).sum() / num_moves
 
@@ -172,9 +160,7 @@ class AngleHead(ActionHead):
                     masked_new = new_log_prob[mask.bool()]
                     masked_ratio = ratio[mask.bool()]
                     approx_kl = (masked_old - masked_new).mean().item()
-                    clip_fraction = (
-                        (masked_ratio - 1.0).abs() > clip_epsilon
-                    ).float().mean().item()
+                    clip_fraction = ((masked_ratio - 1.0).abs() > clip_epsilon).float().mean().item()
                 else:
                     approx_kl = 0.0
                     clip_fraction = 0.0
@@ -186,9 +172,7 @@ class AngleHead(ActionHead):
 
             with torch.no_grad():
                 approx_kl = (old_log_prob - new_log_prob).mean().item()
-                clip_fraction = (
-                    (ratio - 1.0).abs() > clip_epsilon
-                ).float().mean().item()
+                clip_fraction = ((ratio - 1.0).abs() > clip_epsilon).float().mean().item()
 
         return HeadLoss(
             loss=loss,
