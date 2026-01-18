@@ -56,8 +56,8 @@ MAX_EPISODE_STEPS = 22.4 * 30  # 30 realtime seconds
 # Spawn configuration
 SPAWN_AREA_MIN = 0.0 + 15
 SPAWN_AREA_MAX = 32.0 - 15
-MIN_SPAWN_DISTANCE = 6.0
-MAX_SPAWN_DISTANCE = 6.0
+MIN_SPAWN_DISTANCE = 12.0
+MAX_SPAWN_DISTANCE = 12.0
 
 # Number of zerglings
 NUM_ZERGLINGS = 2
@@ -138,7 +138,7 @@ class SC2GymEnv(gym.Env):
         self.terminated: bool = False
 
         self.upgrade_level = random.choice(self.params.get("upgrade_level", [0, 1, 2]))
-        self.game_steps_per_env = 2
+        self.game_steps_per_env = self.params.get("game_steps_per_env", 2)
         self.hp_multiplier = 1
         self.init_game()
 
@@ -162,9 +162,7 @@ class SC2GymEnv(gym.Env):
             units.sort(key=lambda u: u.tag)
 
         self.terminated = not all((self.units[1], self.units[2]))
-        logger.debug(
-            f"Marine alive: {len(self.units[1])}, Zerglings alive: {len(self.units[2])}, episode ended: {self.terminated}"
-        )
+        logger.debug(f"Marine alive: {len(self.units[1])}, Zerglings alive: {len(self.units[2])}")
 
     def clean_battlefield(self) -> None:
         units = sum(self.units.values(), [])

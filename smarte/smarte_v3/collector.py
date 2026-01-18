@@ -5,6 +5,7 @@ Each worker collects complete episodes and sends them to the learner.
 No padding, no fixed rollout length, no mid-episode resets.
 """
 
+import os
 import signal
 from dataclasses import dataclass
 from typing import Any
@@ -105,7 +106,9 @@ class EpisodeBatch:
             action_masks[offset:end] = ep.action_masks
 
             # Compute V-trace for this episode (terminal state, bootstrap = 0)
-            ep_vtrace, ep_adv = compute_vtrace_episode(rewards=ep.rewards, values=ep.behavior_values, gamma=config.gamma)
+            ep_vtrace, ep_adv = compute_vtrace_episode(
+                rewards=ep.rewards, values=ep.behavior_values, gamma=config.gamma
+            )
             vtrace_targets[offset:end] = ep_vtrace
             advantages[offset:end] = ep_adv
 
@@ -144,7 +147,9 @@ class EpisodeBatch:
         }
 
 
-def compute_vtrace_episode(rewards: np.ndarray, values: np.ndarray, gamma: float = 0.99) -> tuple[np.ndarray, np.ndarray]:
+def compute_vtrace_episode(
+    rewards: np.ndarray, values: np.ndarray, gamma: float = 0.99
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Compute V-trace targets and advantages for a single complete episode.
 
@@ -180,6 +185,12 @@ def collector_worker(
     # Ignore SIGINT in workers (let main handle it)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
+    # Limit PyTorch to 1 thread per worker to avoid CPU oversubscription
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+
     try:
         env = SC2GymEnv({"upgrade_level": config.upgrade_levels})
         model = ActorCritic(config.model)
@@ -188,7 +199,6 @@ def collector_worker(
         local_version = shared_weights.pull(model)
 
         while not shutdown_event.is_set():
-            # Check for weight updates before each episode
             current_version = shared_weights.get_version()
             if current_version > local_version:
                 local_version = shared_weights.pull(model)
@@ -203,9 +213,8 @@ def collector_worker(
                 max_steps=config.max_episode_steps,
             )
 
-            # Send episode to main
             try:
-                episode_queue.put(episode, timeout=1.0)
+                episode_queue.put(episode, timeout=10.0)
             except Exception as e:
                 logger.warning(f"Worker {worker_id} failed to send episode: {e}")
                 continue
@@ -238,13 +247,16 @@ def collect_episode(env, model: ActorCritic, worker_id: int, weight_version: int
     done = False
     steps = 0
 
-    with torch.no_grad():
+    # Pre-allocate observation tensor for reuse
+    obs_tensor = torch.empty(1, obs.shape[0], dtype=torch.float32)
+
+    with torch.inference_mode():
         while not done and steps < max_steps:
             observations.append(obs)
             action_masks.append(action_mask)
 
-            # Get action from policy
-            obs_tensor = torch.from_numpy(obs).unsqueeze(0)
+            # Get action from policy (reuse pre-allocated tensor)
+            obs_tensor[0].copy_(torch.from_numpy(obs))
             mask_tensor = torch.from_numpy(action_mask).unsqueeze(0)
             output = model(obs_tensor, action_mask=mask_tensor)
 

@@ -6,6 +6,14 @@ Data architecture: 1 game = 1 episode = 1 training unit
 - Learner batches N episodes, computes loss on all steps at once
 - Single forward pass, single backward pass
 
+Key optimizations:
+- Batched episode processing (pad + stack)
+- Single forward pass for all episodes
+- torch.compile for kernel fusion
+- GPU-optimized tensor operations
+- CPU thread limiting to prevent oversubscription
+- Lock-free weight sharing between processes
+
 Architecture:
     Worker 1: [SC2 + Policy] -> episode -> Queue ->
     Worker 2: [SC2 + Policy] -> episode -> Queue ->  Main: V-trace -> Train -> Broadcast weights
@@ -14,13 +22,18 @@ Architecture:
                                     Shared memory weights
 """
 
+from __future__ import annotations
+
 import argparse
 import dataclasses
 import multiprocessing as mp
+import os
+import sys
 import time
 from collections import deque
 from multiprocessing import Event, Process, Queue
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -34,12 +47,34 @@ from .interop import SharedWeights
 from .model import ActorCritic
 
 
-def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | None = None):
-    """Main training loop."""
+def train(
+    total_episodes: int,
+    num_workers: int,
+    seed: int = 42,
+    resume: str | None = None,
+    compile_model: bool = True,
+):
+    """Main training loop with batched GPU processing."""
+    # === CRITICAL PERFORMANCE SETTINGS ===
+    # Set environment variables BEFORE spawning workers (they inherit these)
+    # This prevents CPU oversubscription when running multiple workers
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+    # Also set for PyTorch in main process (workers will set their own)
+    # Main process can use more threads since it's doing GPU work mostly
+    torch.set_num_threads(2)
+    torch.set_num_interop_threads(2)
+
     mp.set_start_method("spawn")
     np.random.seed(seed)
     torch.manual_seed(seed)
-    device = torch.device("cpu")
+
+    # Device selection
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     config = IMPALAConfig(total_episodes=total_episodes, num_workers=num_workers, upgrade_levels=[1])
@@ -47,13 +82,16 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
     config.model.num_commands = NUM_COMMANDS
 
     model = ActorCritic(config.model).to(device)
+    compiled_model: Any = model  # For type checker compatibility with torch.compile
 
     if resume:
         print(f"Resuming from checkpoint: {resume}")
-        checkpoint = torch.load(resume, map_location=device)
+        checkpoint = torch.load(resume, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model_state_dict"])
 
-    episode_queue: Queue = Queue(maxsize=num_workers * 2)
+    compiled_model = torch.compile(model, mode="default", fullgraph=False)
+
+    episode_queue = Queue(maxsize=num_workers * 2)
     shared_weights = SharedWeights(model)
     shutdown_event = Event()
 
@@ -77,8 +115,8 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
     # Tracking
     update_count = 0
     collected_episodes = 0
-    episode_returns = deque(maxlen=100)
-    episode_lengths = deque(maxlen=100)
+    episode_lengths: deque[int] = deque(maxlen=100)
+    episode_returns: deque[float] = deque(maxlen=100)
     start_time = time.time()
 
     print(f"\nStarting IMPALA training for {total_episodes:,} episodes...")
@@ -119,14 +157,14 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
             move_mask = (tensors["commands"] == ACTION_MOVE).float()
 
             # === Training loop: multiple epochs over the batch ===
-            model.train()
+            compiled_model.train()
             total_loss = 0.0
             total_entropy = 0.0
             total_metrics: dict[str, float] = {}
 
             for _ in range(config.num_epochs):
                 # Forward pass through model
-                output = model(
+                output = compiled_model(
                     obs=tensors["observations"],
                     command=tensors["commands"],
                     angle=tensors["angles"],
@@ -172,7 +210,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
 
             update_count += 1
             lr_scheduler.step()
-            shared_weights.push(model)
+            shared_weights.push(model)  # Always push uncompiled model weights
 
             # Average over epochs for logging
             avg_loss = total_loss / config.num_epochs
@@ -234,7 +272,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
         "config": dataclasses.asdict(config),
     }
 
-    model_path = model_dir / f"impala_v2_{timestamp}.pt"
+    model_path = model_dir / f"smarte_v3_{timestamp}.pt"
     torch.save(checkpoint, model_path)
     print(f"Model saved to {model_path}")
 
@@ -244,6 +282,9 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
 # ============================================================================
 # CLI
 # ============================================================================
+
+logger.remove()
+logger.add(sys.stderr, level="INFO")
 
 
 def main():
