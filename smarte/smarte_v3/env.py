@@ -49,8 +49,8 @@ MAX_EPISODE_STEPS = 22.4 * 30  # 30 realtime seconds
 # Spawn configuration
 SPAWN_AREA_MIN = 32.0
 SPAWN_AREA_MAX = 32.0
-MIN_SPAWN_DISTANCE = 8.0
-MAX_SPAWN_DISTANCE = 12.0
+MIN_SPAWN_DISTANCE = 6.0
+MAX_SPAWN_DISTANCE = 14.0
 
 # Number of zerglings
 NUM_ZERGLINGS = 2
@@ -113,9 +113,9 @@ class SC2GymEnv(gym.Env):
     # === Observation Space Constants ===
     # Time: time_remaining (1) = 1
     # Marine: own_health (1), weapon_cooldown (1), weapon_cooldown_norm (1), facing_sin (1), facing_cos (1) = 5
-    # Per zergling (x2): health (1), angle_sin (1), angle_cos (1), distance (1), facing_sin (1), facing_cos (1) = 6
-    # Total: 1 + 5 + 6*2 = 18
-    OBS_SIZE = 18
+    # Per zergling (x2): health (1), angle_sin (1), angle_cos (1), distance (1), in_attack_range(1), facing_sin (1), facing_cos (1) = 7
+    # Total: 1 + 5 + 7*2 = 24
+    OBS_SIZE = 20
 
     def __init__(self, params=None) -> None:
         super().__init__()
@@ -159,6 +159,10 @@ class SC2GymEnv(gym.Env):
         for units in self.units.values():
             units.sort(key=lambda u: u.tag)
 
+        # for zergling in self.units[2]:
+        #     if zergling.health < zergling.health_max and self.units[1]:
+        #         self.client.unit_attack_unit(zergling.tag, self.units[1][0].tag)
+
         self.terminated = not all((self.units[1], self.units[2]))
         logger.debug(f"Marine alive: {len(self.units[1])}, Zerglings alive: {len(self.units[2])}")
 
@@ -192,12 +196,12 @@ class SC2GymEnv(gym.Env):
 
         # Command zerglings to attack marine
         # for zergling in self.units[2]:
-        #     self.client.unit_attack_unit(zergling.tag, marine.tag)
+        #     self.client.unit_attack_unit(zergling.tag, self.units[1][0].tag)
 
     def _get_zergling_obs(self, marine: UnitState, zergling: UnitState | None) -> list[float]:
         """Get observation features for a single zergling relative to marine"""
         if zergling is None:
-            return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
         # Health (normalized)
         enemy_health = zergling.health / zergling.health_max
@@ -208,11 +212,20 @@ class SC2GymEnv(gym.Env):
         # Distance (normalized, max meaningful distance ~20)
         distance = marine.distance_to(zergling)
         distance_norm = min(1.0, distance / 30.0)
+        in_attack_range = distance < MARINGE_SIGHT
 
         # Zergling facing (sin, cos encoding)
         facing_sin, facing_cos = math.sin(zergling.facing), math.cos(zergling.facing)
 
-        return [enemy_health, angle_sin, angle_cos, distance_norm, facing_sin, facing_cos]
+        return [
+            enemy_health,
+            angle_sin,
+            angle_cos,
+            distance_norm,
+            in_attack_range,
+            facing_sin,
+            facing_cos,
+        ]
 
     def _compute_observation(self) -> np.ndarray:
         if not self.units[1]:
