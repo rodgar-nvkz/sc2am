@@ -56,14 +56,16 @@ class SC2ClientProtocol:
         assert not response.error, f"SC2 API Error: {response.error}"
         return response
 
-    def host_game(self, map_data: bytes, players: list[pb.PlayerSetup], disable_fog: bool = True) -> pb.ResponseCreateGame:
+    def host_game(self, map_data: bytes, players: list[pb.PlayerSetup]) -> pb.ResponseCreateGame:
         # local_map = pb.LocalMap(map_data=map_data)
-        local_map = pb.LocalMap(map_path="Flat32s.SC2Map")
-        request = pb.RequestCreateGame(local_map=local_map, player_setup=players, realtime=False, disable_fog=disable_fog)
+        local_map = pb.LocalMap(map_path="Flat64b.SC2Map")
+        request = pb.RequestCreateGame(local_map=local_map, player_setup=players, realtime=False, disable_fog=True)
         response = self.send(create_game=request).create_game
         return response
 
-    def join_game(self, race: Race, port_config: PortConfig | None = None, host_ip: str | None = None) -> pb.ResponseJoinGame:
+    def join_game(
+        self, race: Race, port_config: PortConfig | None = None, host_ip: str | None = None
+    ) -> pb.ResponseJoinGame:
         interface_options = pb.InterfaceOptions(
             raw=True,
             score=True,
@@ -83,7 +85,7 @@ class SC2ClientProtocol:
         return self.send(join_game=request).join_game
 
     def restart_game(self) -> pb.ResponseRestartGame:
-        """"Restart not supported in multiplayer, extremely slow in singleplayer"""
+        """ "Restart not supported in multiplayer, extremely slow in singleplayer"""
         return self.send(restart_game=pb.RequestRestartGame()).restart_game
 
     def step(self, count: int = 1) -> pb.ResponseStep:
@@ -146,7 +148,9 @@ class SC2ClientProtocol:
         return self.unit_command(cmd)
 
     def unit_attack_unit(self, unit_tag: int, target_unit_tag: int) -> pb.ResponseAction:
-        cmd = raw.ActionRawUnitCommand(ability_id=self.ABILITY_ATTACK, unit_tags=[unit_tag], target_unit_tag=target_unit_tag)
+        cmd = raw.ActionRawUnitCommand(
+            ability_id=self.ABILITY_ATTACK, unit_tags=[unit_tag], target_unit_tag=target_unit_tag
+        )
         return self.unit_command(cmd)
 
     def save_replay(self) -> bytes:
