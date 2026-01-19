@@ -40,10 +40,10 @@ class IMPALAConfig:
     aux_coef: float = 0.5
 
     # Optimizer
-    lr: float = 5e-3
+    lr: float = 3e-3
     lr_eps: float = 1e-4
     lr_start_factor: float = 1.0
-    lr_end_factor: float = 0.1
+    lr_end_factor: float = 0.5
 
     # Environment
     upgrade_levels: list = dataclasses.field(default_factory=list)

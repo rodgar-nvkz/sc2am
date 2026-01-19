@@ -49,11 +49,35 @@ MAX_EPISODE_STEPS = 22.4 * 30  # 30 realtime seconds
 # Spawn configuration
 SPAWN_AREA_MIN = 32.0
 SPAWN_AREA_MAX = 32.0
-MIN_SPAWN_DISTANCE = 6.0
+MIN_SPAWN_DISTANCE = 7.0
 MAX_SPAWN_DISTANCE = 14.0
 
 # Number of zerglings
 NUM_ZERGLINGS = 2
+
+
+@dataclass
+class DamageTracker:
+    """Tracks cumulative and per-step damage dealt/taken from sc2clientprotocol score data."""
+
+    dealt_acc: float = 0.0
+    taken_acc: float = 0.0
+    dealt_step: float = 0.0
+    taken_step: float = 0.0
+
+    def update(self, score_details) -> None:
+        dealt = score_details.total_damage_dealt.life + score_details.total_damage_dealt.shields
+        taken = score_details.total_damage_taken.life + score_details.total_damage_taken.shields
+        self.dealt_step = dealt - self.dealt_acc
+        self.taken_step = taken - self.taken_acc
+        self.dealt_acc = dealt
+        self.taken_acc = taken
+
+    def reset(self) -> None:
+        self.dealt_acc = 0.0
+        self.taken_acc = 0.0
+        self.dealt_step = 0.0
+        self.taken_step = 0.0
 
 
 @dataclass
@@ -66,7 +90,7 @@ class UnitState:
     health: float
     health_max: float
     weapon_cooldown: float = 0.0
-    facing: float = 0.0  # Unit facing in radians (0 = East/+X, π/2 = North/+Y)
+    facing: float = 0.0  # In radians (0 = East/+X, π/2 = North/+Y)
 
     @classmethod
     def from_proto(cls, unit) -> "UnitState":
@@ -74,10 +98,10 @@ class UnitState:
             tag=unit.tag,
             x=unit.pos.x,
             y=unit.pos.y,
+            facing=unit.facing,
             health=unit.health,
             health_max=unit.health_max,
             weapon_cooldown=getattr(unit, "weapon_cooldown", 0.0),
-            facing=getattr(unit, "facing", 0.0),
         )
 
     def distance_to(self, other: "UnitState") -> float:
@@ -136,8 +160,11 @@ class SC2GymEnv(gym.Env):
         self.current_step: int = 0
         self.terminated: bool = False
 
+        # Damage tracking for per-step rewards
+        self.damage = DamageTracker()
+
         self.upgrade_level = random.choice(self.params.get("upgrade_level", [0, 1, 2]))
-        self.game_steps_per_env = self.params.get("game_steps_per_env", 2)
+        self.game_steps_per_env = self.params.get("game_steps_per_env", 7)
         self.init_game()
 
     def init_game(self) -> None:
@@ -150,6 +177,8 @@ class SC2GymEnv(gym.Env):
     def observe_units(self) -> None:
         self.units = defaultdict(list)
         obs = self.client.get_observation()
+        self.damage.update(obs.observation.score.score_details)
+
         for unit in obs.observation.raw_data.units:
             if unit.unit_type not in (UNIT_MARINE, UNIT_ZERGLING) or unit.health <= 0:
                 continue
@@ -159,9 +188,9 @@ class SC2GymEnv(gym.Env):
         for units in self.units.values():
             units.sort(key=lambda u: u.tag)
 
-        # for zergling in self.units[2]:
-        #     if zergling.health < zergling.health_max and self.units[1]:
-        #         self.client.unit_attack_unit(zergling.tag, self.units[1][0].tag)
+        for zergling in self.units[2]:  # trigger everyone attack on first hit
+            if zergling.health < zergling.health_max and self.units[1]:
+                self.client.unit_attack_unit(zergling.tag, self.units[1][0].tag)
 
         self.terminated = not all((self.units[1], self.units[2]))
         logger.debug(f"Marine alive: {len(self.units[1])}, Zerglings alive: {len(self.units[2])}")
@@ -182,11 +211,12 @@ class SC2GymEnv(gym.Env):
         self.client.spawn_units(UNIT_MARINE, (marine_x, marine_y), owner=1, quantity=1)
 
         # Spawn 2 zergling nearby at random distance/angle from marine
-        spawn_distance = random.uniform(MIN_SPAWN_DISTANCE, MAX_SPAWN_DISTANCE)
-        spawn_angle = random.uniform(0, 2 * math.pi)
-        ling_x = marine_x + spawn_distance * math.cos(spawn_angle)
-        ling_y = marine_y + spawn_distance * math.sin(spawn_angle)
-        self.client.spawn_units(UNIT_ZERGLING, (ling_x, ling_y), owner=2, quantity=2)
+        for _ in range(NUM_ZERGLINGS):
+            spawn_distance = random.uniform(MIN_SPAWN_DISTANCE, MAX_SPAWN_DISTANCE)
+            spawn_angle = random.uniform(0, 2 * math.pi)
+            ling_x = marine_x + spawn_distance * math.cos(spawn_angle)
+            ling_y = marine_y + spawn_distance * math.sin(spawn_angle)
+            self.client.spawn_units(UNIT_ZERGLING, (ling_x, ling_y), owner=2, quantity=1)
 
         self.game.step(count=2)  # unit spawn takes two frames
 
@@ -277,13 +307,14 @@ class SC2GymEnv(gym.Env):
         if self.current_step >= MAX_EPISODE_STEPS:
             return -1
 
+        enemy_max_health = ZERGLING_MAX_HP * NUM_ZERGLINGS
         if not self.units[2] or not self.units[1]:
             ally_health = sum([u.health / u.health_max for u in self.units[1]], 0.0) / 1.0
-            enemy_max_health = ZERGLING_MAX_HP * 2
             enemy_health_left = sum([u.health for u in self.units[2]], 0.0)
-            return ally_health - (enemy_health_left / enemy_max_health)
+            difference = ally_health - (enemy_health_left / enemy_max_health)
+            return difference if difference <= 0 else (1 + difference) ** 2
 
-        return 0
+        return self.damage.dealt_step / enemy_max_health / 10  # EPISODE_TOTAL = [0;0.1] weak but usefull signal
 
     def _agent_action(self, action: dict) -> None:
         """Execute hybrid action: discrete command + continuous angle."""
@@ -326,11 +357,10 @@ class SC2GymEnv(gym.Env):
         mask[self.ACTION_ATTACK_Z2] = len(zerglings) > 1 and ready and zerglings[1].distance_to(marine) < MARINGE_SIGHT
         return mask
 
-    def reset(
-        self, *, seed: int | None = None, options: dict[str, Any] | None = None
-    ) -> tuple[np.ndarray, dict[str, Any]]:
+    def reset(self, *_, **__) -> tuple[np.ndarray, dict[str, Any]]:
         self.current_step = 0
         self.terminated = False
+        self.damage.reset()
         self.clean_battlefield()
         self.prepare_battlefield()
         return self._compute_observation(), {"action_mask": self.get_action_mask()}

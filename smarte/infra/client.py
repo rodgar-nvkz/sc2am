@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import websocket
+from loguru import logger
 from portpicker import PickUnusedPort
 from s2clientprotocol import raw_pb2 as raw
 from s2clientprotocol import sc2api_pb2 as pb
@@ -120,6 +121,7 @@ class SC2ClientProtocol:
 
     def enable_enemy_control(self) -> pb.ResponseDebug:
         """Enable control of enemy units (allows issuing commands to opponent's units)"""
+        logger.info("Enemy control enabled")
         command = DebugCommand(game_state="control_enemy")
         return self.send(debug=pb.RequestDebug(debug=[command])).debug
 

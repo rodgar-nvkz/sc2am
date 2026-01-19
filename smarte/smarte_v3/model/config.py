@@ -27,10 +27,25 @@ class ModelConfig:
     # Head settings
     head_hidden_size: int = 32
 
-    # Continuous action settings
-    # -0.5 -> std≈0.6 (too focused, gets stuck in fixed angles)
-    # 0.5 -> std≈1.65 (explores more, harder to get stuck)
-    # 1.0 -> std≈2.7 (nearly uniform on circle)
+    # Angle head architecture
+    # Deeper networks can learn more complex angle transformations
+    angle_encoder_layers: int = 2  # Number of layers in encoder
+    angle_output_layers: int = 2  # Number of layers in output head
+
+    # Continuous action settings (von Mises distribution)
+    # The von Mises distribution is the "circular Gaussian" - proper for angles.
+    # Concentration parameter κ (kappa):
+    #   κ → 0: uniform distribution on circle (maximum exploration)
+    #   κ ≈ 1: moderate concentration (std ≈ 65°)
+    #   κ ≈ 2: tighter concentration (std ≈ 45°)
+    #   κ ≈ 4: fairly concentrated (std ≈ 30°)
+    #   κ → ∞: point mass (no exploration)
+    #
+    # We use log(κ) as the learnable parameter for numerical stability.
+    # init_log_concentration = 0.0 → κ = 1.0 (good exploration to start)
+    angle_init_log_concentration: float = 0.0
+
+    # Legacy parameter for backward compatibility (not used with von Mises)
     angle_init_log_std: float = 0.75
 
     # Weight initialization

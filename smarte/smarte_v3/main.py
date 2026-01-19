@@ -229,6 +229,9 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
             # Weight staleness
             avg_staleness = np.mean(shared_weights.get_version() - np.array(batch.weight_versions))
 
+            # Get von Mises concentration for logging
+            concentration = model.angle_head.get_concentration()
+
             print(
                 f"Update {update_count:4d} | "
                 f"Eps: {collected_episodes:>6,}/{total_episodes:,} | "
@@ -239,6 +242,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
                 f"Loss: {avg_loss:>6.3f} | "
                 f"Aux: {avg_aux_loss:>5.3f} | "
                 f"Ent: {avg_entropy:>5.2f} | "
+                f"κ: {concentration:>5.2f} | "
                 f"Stale: {avg_staleness:>4.1f} | "
                 f"LR: {optimizer.param_groups[0]['lr']:.2e}"
             )
