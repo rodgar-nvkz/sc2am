@@ -32,6 +32,13 @@ class IMPALAConfig:
     value_coef: float = 0.5
     max_grad_norm: float = 40.0
 
+    # Auxiliary task coefficient
+    # The auxiliary task forces the encoder to represent observation features
+    # (enemy angles, distances) that are critical for correct action selection.
+    # This prevents encoder collapse where policy gradients cancel across episodes.
+    # Start with 0.5 (equal to value_coef), tune down if it dominates policy learning.
+    aux_coef: float = 0.5
+
     # Optimizer
     lr: float = 5e-3
     lr_eps: float = 1e-4

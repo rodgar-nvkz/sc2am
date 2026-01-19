@@ -1,6 +1,6 @@
 """Model configuration for ActorCritic architecture."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -38,6 +38,36 @@ class ModelConfig:
     init_gain: float = 1.41421356  # sqrt(2)
     policy_init_gain: float = 0.05
     value_init_gain: float = 1.0
+
+    # === Auxiliary Task Settings ===
+    # The auxiliary task forces the encoder to represent observation features
+    # that are critical for correct action selection. This prevents encoder
+    # collapse where all observations map to similar hidden states, causing
+    # policy gradients to cancel across episodes with different optimal actions.
+    aux_enabled: bool = True
+    aux_hidden_size: int = 16  # Smaller than main head - this should be easy
+
+    # Which observation indices to predict as auxiliary targets.
+    # Based on env._compute_observation() layout:
+    #   [0]: time_remaining
+    #   [1]: own_health
+    #   [2]: weapon_cooldown (binary)
+    #   [3]: weapon_cooldown_norm
+    #   [4]: marine_facing_sin
+    #   [5]: marine_facing_cos
+    #   [6-12]: z1: health, angle_sin, angle_cos, distance_norm, in_attack_range, facing_sin, facing_cos
+    #   [13-19]: z2: same as z1
+    #
+    # Critical features for chase/kite behavior:
+    #   - z1_angle_sin (7), z1_angle_cos (8), z1_distance (9)
+    #   - z2_angle_sin (14), z2_angle_cos (15), z2_distance (16)
+    # These determine "which direction to move" - exactly what the angle head outputs.
+    aux_target_indices: list[int] = field(default_factory=lambda: [7, 8, 9, 14, 15, 16])
+
+    @property
+    def aux_target_size(self) -> int:
+        """Number of observation features to predict in auxiliary task."""
+        return len(self.aux_target_indices)
 
     @property
     def head_input_size(self) -> int:

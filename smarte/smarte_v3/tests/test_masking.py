@@ -540,8 +540,8 @@ class TestAngleHeadIndependence:
         """Verify angle head input size equals obs_size (no command conditioning)."""
         angle_head = AngleHead(config)
 
-        # Check the first linear layer input size
-        first_layer = angle_head.net[0]
+        # Check the first linear layer input size (encoder is the first part of the network)
+        first_layer = angle_head.encoder[0]
         assert first_layer.in_features == config.obs_size, (
             f"Angle head input size {first_layer.in_features} != obs_size {config.obs_size}"
         )
@@ -608,8 +608,11 @@ class TestEndToEndTraining:
         model.zero_grad()
         total_loss.backward()
 
-        # Verify all parameters have gradients
+        # Verify all parameters have gradients (except aux_head which requires aux_loss)
         for name, param in model.named_parameters():
+            if "aux_head" in name:
+                # aux_head only gets gradients when aux_loss is computed
+                continue
             assert param.grad is not None, f"Parameter {name} has no gradient"
 
         # Verify loss is finite

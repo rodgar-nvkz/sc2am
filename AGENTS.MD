@@ -29,6 +29,7 @@ Notes:
 - `s2clientprotocol` - Direct SC2 API communication
 - `pettingzoo` - Multi-agent RL environment interface
 - `uv` - Package manager
+- `PYTHONPATH=. uv run python -m pytest` to run tests
 
 ## Key Classes
 - `SC2BackgroundServer`: Spawns SC2 process, manages websocket, sends protobuf requests

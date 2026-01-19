@@ -904,7 +904,6 @@ dependencies = [
     { name = "pettingzoo", extra = ["butterfly"] },
     { name = "portpicker" },
     { name = "protobuf" },
-    { name = "pytest" },
     { name = "s2clientprotocol" },
     { name = "stable-baselines3" },
     { name = "tensorboard" },
@@ -918,6 +917,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "ipython" },
+    { name = "pytest" },
 ]
 
 [package.metadata]
@@ -928,7 +928,7 @@ requires-dist = [
     { name = "pettingzoo", extras = ["butterfly"], specifier = "~=1.24.0" },
     { name = "portpicker", specifier = "~=1.6.0" },
     { name = "protobuf", specifier = "~=6.33.2" },
-    { name = "pytest", specifier = ">=9.0.2" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.2" },
     { name = "s2clientprotocol", git = "https://github.com/rodgar-nvkz/s2client-proto.git" },
     { name = "stable-baselines3", specifier = "~=2.7.1" },
     { name = "tensorboard", specifier = "~=2.20.0" },

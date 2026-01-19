@@ -7,12 +7,14 @@ This module provides the top-level ActorCritic class that:
 1. Produces discrete command actions via CommandHead
 2. Produces continuous angle actions via AngleHead (independent, not conditioned on command)
 3. Estimates state value via CriticHead
+4. Computes auxiliary prediction loss for representation learning
 
 The model supports:
 - Action masking for invalid commands
 - Proper masked entropy/log_prob for training (mask is REQUIRED)
 - Deterministic evaluation mode
 - Encapsulated loss computation in heads
+- Auxiliary prediction task to prevent encoder collapse
 """
 
 from dataclasses import dataclass
@@ -73,10 +75,18 @@ class ActorCritic(nn.Module):
 
     P(action | obs) = P(command | obs) * P(angle | obs)  [independent]
 
+    Auxiliary Prediction Task:
+    The angle head includes an auxiliary prediction head that forces the encoder
+    to represent observation features (enemy angles, distances). This prevents
+    encoder collapse where all observations map to similar hidden states, causing
+    policy gradients to cancel across episodes with different optimal actions.
+
     Architecture:
         obs -> CommandHead -> command
             |
             +-> AngleHead -> angle
+            |       |
+            |       +-> AuxHead -> predicted obs features (auxiliary task)
             |
             +-> CriticHead -> value
     """
@@ -143,6 +153,22 @@ class ActorCritic(nn.Module):
         angle = self.angle_head.get_deterministic_action(obs=obs)
 
         return command, angle
+
+    def compute_aux_loss(self, obs: Tensor) -> Tensor:
+        """Compute auxiliary prediction loss for representation learning.
+
+        The auxiliary task forces the angle head's encoder to represent
+        observation features (enemy angles, distances) that are critical
+        for correct action selection. This supervised loss doesn't cancel
+        across episodes, preventing encoder collapse.
+
+        Args:
+            obs: Observations (B, obs_size)
+
+        Returns:
+            Scalar MSE loss for auxiliary prediction
+        """
+        return self.angle_head.compute_aux_loss(obs)
 
     def compute_losses(
         self,

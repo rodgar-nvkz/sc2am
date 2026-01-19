@@ -158,6 +158,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
             compiled_model.train()
             total_loss = 0.0
             total_entropy = 0.0
+            total_aux_loss = 0.0
 
             for _ in range(config.num_epochs):
                 # Forward pass through model
@@ -184,11 +185,20 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
                 angle_loss = losses["angle"].loss
                 value_loss = losses["value"].loss
 
+                # Auxiliary prediction loss - forces encoder to represent observation features
+                # This supervised loss doesn't cancel across episodes, preventing encoder collapse
+                aux_loss = model.compute_aux_loss(tensors["observations"])
+
                 # Masked entropy: only count angle entropy for MOVE commands
                 entropy = output.total_entropy(move_mask).mean()
 
                 policy_loss = cmd_loss + angle_loss
-                loss = policy_loss + config.value_coef * value_loss - config.entropy_coef * entropy
+                loss = (
+                    policy_loss
+                    + config.value_coef * value_loss
+                    + config.aux_coef * aux_loss
+                    - config.entropy_coef * entropy
+                )
 
                 # Backward pass
                 optimizer.zero_grad()
@@ -198,6 +208,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
 
                 total_loss += loss.item()
                 total_entropy += entropy.item()
+                total_aux_loss += aux_loss.item()
 
             update_count += 1
             lr_scheduler.step()
@@ -206,6 +217,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
             # Average over epochs for logging
             avg_loss = total_loss / config.num_epochs
             avg_entropy = total_entropy / config.num_epochs
+            avg_aux_loss = total_aux_loss / config.num_epochs
 
             # Logging
             elapsed = time.time() - start_time
@@ -225,6 +237,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
                 f"Len: {avg_length:>5.0f} | "
                 f"Win: {win_rate:>5.1f}% | "
                 f"Loss: {avg_loss:>6.3f} | "
+                f"Aux: {avg_aux_loss:>5.3f} | "
                 f"Ent: {avg_entropy:>5.2f} | "
                 f"Stale: {avg_staleness:>4.1f} | "
                 f"LR: {optimizer.param_groups[0]['lr']:.2e}"

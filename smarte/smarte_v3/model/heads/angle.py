@@ -1,14 +1,20 @@
-"""Angle head for continuous movement direction.
+"""Angle head for continuous movement direction with auxiliary prediction.
 
 AlphaZero-style: predicts movement angle from observations only,
 without conditioning on the selected command. The angle represents
 "if we move, where should we go?" - a property of the state, not
 of the command choice.
 
+Auxiliary Prediction Task:
+The auxiliary head forces the encoder to represent observation features
+(enemy angles, distances) that are critical for correct action selection.
+This prevents encoder collapse where policy gradients cancel across episodes.
+
 Masking is applied at loss computation time, not during forward pass.
 """
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, distributions, nn
 
 from ..config import ModelConfig
@@ -16,28 +22,46 @@ from .base import ActionHead, HeadLoss, HeadOutput
 
 
 class AngleHead(ActionHead):
-    """Continuous action head for movement angle.
+    """Continuous action head for movement angle with auxiliary prediction.
 
     Outputs a direction vector (sin, cos) for movement.
     Predicts from observations only (no command conditioning).
 
     The distribution is a Normal over (sin, cos) with learnable log_std.
     Outputs are normalized to the unit circle.
+
+    Auxiliary Task:
+    An auxiliary head predicts selected observation features from the
+    hidden representation. This supervised loss doesn't cancel across
+    episodes (unlike policy gradient), forcing the encoder to maintain
+    observation-dependent representations.
     """
 
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
 
-        # Network: obs -> angle mean (no command conditioning)
-        self.net = nn.Sequential(
+        # Split network into encoder + output layer to expose hidden state
+        # The encoder is what the auxiliary task forces to learn good representations
+        self.encoder = nn.Sequential(
             nn.Linear(config.head_input_size, config.head_hidden_size),
             nn.Tanh(),
-            nn.Linear(config.head_hidden_size, 2),  # sin, cos
         )
+        self.output_layer = nn.Linear(config.head_hidden_size, 2)  # sin, cos
 
         # Learnable log std (shared across all states)
         self.log_std = nn.Parameter(torch.tensor([config.angle_init_log_std, config.angle_init_log_std]))
+
+        # Auxiliary prediction head - predicts observation features from hidden state
+        # This forces encoder to represent angle/distance information
+        self.aux_enabled = config.aux_enabled
+        if self.aux_enabled:
+            self.aux_head = nn.Sequential(
+                nn.Linear(config.head_hidden_size, config.aux_hidden_size),
+                nn.Tanh(),
+                nn.Linear(config.aux_hidden_size, config.aux_target_size),
+            )
+            self.aux_target_indices = config.aux_target_indices
 
         self._init_weights()
 
@@ -46,12 +70,22 @@ class AngleHead(ActionHead):
         if not self.config.init_orthogonal:
             return
 
-        for module in self.net:
+        # Initialize encoder
+        for module in self.encoder:
             if isinstance(module, nn.Linear):
                 nn.init.orthogonal_(module.weight, gain=self.config.init_gain)
                 nn.init.constant_(module.bias, 0.0)
 
-        # Use standard gain for output layer also
+        # Initialize output layer
+        nn.init.orthogonal_(self.output_layer.weight, gain=self.config.init_gain)
+        nn.init.constant_(self.output_layer.bias, 0.0)
+
+        # Initialize auxiliary head if enabled
+        if self.aux_enabled:
+            for module in self.aux_head:
+                if isinstance(module, nn.Linear):
+                    nn.init.orthogonal_(module.weight, gain=self.config.init_gain)
+                    nn.init.constant_(module.bias, 0.0)
 
     def forward(self, obs: Tensor, action: Tensor | None = None) -> HeadOutput:
         """Forward pass: produce angle distribution and sample/evaluate.
@@ -63,10 +97,13 @@ class AngleHead(ActionHead):
         Returns:
             HeadOutput with continuous angle action (normalized sin, cos)
         """
+        # Encode observation to hidden state
+        h = self.encoder(obs)
+
         # Output raw direction - no normalization!
         # Normalization was causing gradient issues (KL stayed ~0 despite non-zero gradients)
         # The environment will normalize for movement; here we just need consistent gradients
-        mean = self.net(obs)
+        mean = self.output_layer(h)
 
         std = self.log_std.exp()
         dist = distributions.Normal(mean, std)
@@ -81,6 +118,40 @@ class AngleHead(ActionHead):
 
         return HeadOutput(action=action, log_prob=log_prob, entropy=entropy, distribution=dist)
 
+    def compute_aux_loss(self, obs: Tensor) -> Tensor:
+        """Compute auxiliary prediction loss.
+
+        The auxiliary head predicts selected observation features from the
+        hidden representation. This supervised loss forces the encoder to
+        represent observation-dependent information (enemy angles, distances).
+
+        Unlike policy gradient, this loss doesn't cancel across episodes:
+        - Predicting "enemy at angle θ₁" vs "enemy at angle θ₂" are distinct targets
+        - Each gradient updates different directions in weight space
+        - The encoder MUST differentiate observations to minimize this loss
+
+        Args:
+            obs: Raw observation (B, obs_size)
+
+        Returns:
+            Scalar MSE loss for auxiliary prediction
+        """
+        if not self.aux_enabled:
+            return torch.tensor(0.0, device=obs.device)
+
+        # Get hidden representation (same as used for policy)
+        h = self.encoder(obs)
+
+        # Predict auxiliary targets
+        aux_pred = self.aux_head(h)
+
+        # Extract ground truth targets from observation
+        # These are the features we want the encoder to represent
+        aux_targets = obs[:, self.aux_target_indices]
+
+        # MSE loss - supervised, doesn't cancel!
+        return F.mse_loss(aux_pred, aux_targets)
+
     def get_deterministic_action(self, obs: Tensor) -> Tensor:
         """Get deterministic action (mean of distribution) for evaluation.
 
@@ -90,7 +161,8 @@ class AngleHead(ActionHead):
         Returns:
             Raw angle (sin, cos) tensor (B, 2)
         """
-        return self.net(obs)
+        h = self.encoder(obs)
+        return self.output_layer(h)
 
     def compute_loss(
         self,
