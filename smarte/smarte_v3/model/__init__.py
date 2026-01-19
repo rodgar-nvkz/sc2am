@@ -3,9 +3,8 @@
 AlphaZero-style parallel prediction architecture for RL models:
 
 - All action heads predict independently from observations
-- Masks are REQUIRED (fail-fast design, no backward compatibility for None)
 - Command mask: game state constraints (cooldown, range) - required for forward pass
-- Angle mask: only train angle when MOVE was selected - required for loss computation
+- No action masking for loss/entropy computation (all samples used for all heads)
 
 Components:
 - config: ModelConfig dataclass for all architectural parameters
@@ -27,9 +26,9 @@ Example:
     # action_mask is REQUIRED (use torch.ones for "all valid" if needed)
     output = model(obs, action_mask=mask)
 
-    # move_mask is REQUIRED for training (use config.move_action_id)
-    move_mask = (commands == config.move_action_id).float()
-    entropy = output.total_entropy(move_mask)
+    # Entropy and log_prob computed for all samples (no masking)
+    entropy = output.total_entropy()
+    log_prob = output.total_log_prob()
 
     losses = model.compute_losses(output, old_log_probs, advantages, ...)
 """

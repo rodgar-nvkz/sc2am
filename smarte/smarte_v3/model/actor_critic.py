@@ -19,7 +19,6 @@ The model supports:
 
 from dataclasses import dataclass
 
-import torch
 from torch import Tensor, nn
 
 from .config import ModelConfig
@@ -34,31 +33,21 @@ class ActorCriticOutput:
     angle: HeadOutput
     value: Tensor
 
-    def total_entropy(self, move_mask: Tensor) -> Tensor:
-        """Compute total entropy with proper masking.
-
-        Args:
-            move_mask: Float mask where 1.0 = MOVE command (B,). REQUIRED.
+    def total_entropy(self) -> Tensor:
+        """Compute total entropy (sum of command and angle entropy).
 
         Returns:
-            Total entropy (B,) - angle entropy masked for non-MOVE commands
+            Total entropy (B,)
         """
-        return self.command.entropy + self.angle.entropy * move_mask
+        return self.command.entropy + self.angle.entropy
 
-    def total_log_prob(self, move_mask: Tensor) -> Tensor:
-        """Compute total log probability with proper masking.
-
-        For importance sampling, the action taken when command != MOVE
-        is just the command itself, not (command, angle). So we should
-        only include angle_log_prob when command == MOVE.
-
-        Args:
-            move_mask: Float mask where 1.0 = MOVE command (B,).
+    def total_log_prob(self) -> Tensor:
+        """Compute total log probability (sum of command and angle log probs).
 
         Returns:
-            Total log prob (B,) - angle log_prob masked for non-MOVE commands
+            Total log prob (B,)
         """
-        return self.command.log_prob + self.angle.log_prob * move_mask
+        return self.command.log_prob + self.angle.log_prob
 
 
 class ActorCritic(nn.Module):
@@ -177,7 +166,6 @@ class ActorCritic(nn.Module):
         old_angle_log_prob: Tensor,
         advantages: Tensor,
         vtrace_targets: Tensor,
-        move_mask: Tensor,
         clip_epsilon: float,
     ) -> dict[str, HeadLoss]:
         """Compute losses for all heads.
@@ -188,20 +176,16 @@ class ActorCritic(nn.Module):
             old_angle_log_prob: Behavior policy angle log probs (B,)
             advantages: Advantage estimates (B,)
             vtrace_targets: V-trace value targets (B,)
-            move_mask: Float mask where 1.0 = MOVE command (B,). REQUIRED.
             clip_epsilon: PPO clipping parameter
 
         Returns:
             Dictionary of HeadLoss for each head
         """
-        # Command head uses all samples (mask is required but ignored internally)
-        cmd_mask = torch.ones_like(move_mask)
         cmd_loss = self.command_head.compute_loss(
             new_log_prob=output.command.log_prob,
             old_log_prob=old_cmd_log_prob,
             advantages=advantages,
             clip_epsilon=clip_epsilon,
-            mask=cmd_mask,
         )
 
         angle_loss = self.angle_head.compute_loss(
@@ -209,7 +193,6 @@ class ActorCritic(nn.Module):
             old_log_prob=old_angle_log_prob,
             advantages=advantages,
             clip_epsilon=clip_epsilon,
-            mask=move_mask,
         )
 
         value_loss = self.value_head.compute_loss(

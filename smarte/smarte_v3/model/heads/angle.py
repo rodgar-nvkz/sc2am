@@ -27,7 +27,7 @@ from torch import Tensor, nn
 from torch.distributions import VonMises
 
 from ..config import ModelConfig
-from .base import ActionHead, HeadLoss, HeadOutput
+from .base import ActionHead, HeadOutput
 
 
 def von_mises_entropy(concentration: Tensor) -> Tensor:
@@ -89,7 +89,7 @@ class AngleHead(ActionHead):
         # Deeper encoder with SiLU (Swish) for better gradient flow
         encoder_layers = []
         in_size = config.head_input_size
-        for i in range(config.angle_encoder_layers):
+        for _ in range(config.angle_encoder_layers):
             encoder_layers.append(nn.Linear(in_size, config.head_hidden_size))
             encoder_layers.append(nn.SiLU())
             in_size = config.head_hidden_size
@@ -98,7 +98,7 @@ class AngleHead(ActionHead):
         # Output head: h -> mean angle θ
         # Deeper head for more capacity to learn angle transformation
         output_layers = []
-        for i in range(config.angle_output_layers - 1):
+        for _ in range(config.angle_output_layers - 1):
             output_layers.append(nn.Linear(config.head_hidden_size, config.head_hidden_size))
             output_layers.append(nn.SiLU())
         output_layers.append(nn.Linear(config.head_hidden_size, 1))  # Final: scalar angle in radians
@@ -243,55 +243,6 @@ class AngleHead(ActionHead):
         cos_theta = torch.cos(theta_mean)
 
         return torch.stack([sin_theta, cos_theta], dim=-1)
-
-    def compute_loss(
-        self,
-        new_log_prob: Tensor,
-        old_log_prob: Tensor,
-        advantages: Tensor,
-        clip_epsilon: float,
-        mask: Tensor,
-    ) -> HeadLoss:
-        """Compute PPO-clipped policy loss for angle head.
-
-        Only computes loss for steps where MOVE command was selected.
-
-        Args:
-            new_log_prob: Log prob from current policy (B,)
-            old_log_prob: Log prob from behavior policy (B,)
-            advantages: Advantage estimates (B,)
-            clip_epsilon: PPO clipping parameter
-            mask: Float mask where 1.0 = MOVE command (B,)
-
-        Returns:
-            HeadLoss with loss tensor and metrics dict
-        """
-        ratio = torch.exp(new_log_prob - old_log_prob)
-
-        # Masked loss: only compute for MOVE commands
-        surr1 = ratio * advantages * mask
-        surr2 = torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon) * advantages * mask
-        num_moves = mask.sum().clamp(min=1.0)
-        loss = -torch.min(surr1, surr2).sum() / num_moves
-
-        # Metrics only for masked steps
-        with torch.no_grad():
-            if mask.sum() > 0:
-                masked_old = old_log_prob[mask.bool()]
-                masked_new = new_log_prob[mask.bool()]
-                masked_ratio = ratio[mask.bool()]
-                approx_kl = (masked_old - masked_new).mean().item()
-                clip_fraction = ((masked_ratio - 1.0).abs() > clip_epsilon).float().mean().item()
-            else:
-                approx_kl = 0.0
-                clip_fraction = 0.0
-
-        metrics = {
-            "loss": loss.item(),
-            "approx_kl": approx_kl,
-            "clip_fraction": clip_fraction,
-        }
-        return HeadLoss(loss=loss, metrics=metrics)
 
     def get_concentration(self) -> float:
         """Get current concentration parameter (for logging)."""

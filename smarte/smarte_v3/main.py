@@ -151,9 +151,6 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
             advantages = tensors["advantages"]
             advantages = advantages / (advantages.std() + 1e-8)
 
-            # Precompute move mask for angle loss
-            move_mask = (tensors["commands"] == config.model.move_action_id).float()
-
             # === Training loop: multiple epochs over the batch ===
             compiled_model.train()
             total_loss = 0.0
@@ -176,7 +173,6 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
                     old_angle_log_prob=tensors["behavior_angle_log_probs"],
                     advantages=advantages,
                     vtrace_targets=tensors["vtrace_targets"],
-                    move_mask=move_mask,
                     clip_epsilon=config.clip_epsilon,
                 )
 
@@ -189,8 +185,8 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
                 # This supervised loss doesn't cancel across episodes, preventing encoder collapse
                 aux_loss = model.compute_aux_loss(tensors["observations"])
 
-                # Masked entropy: only count angle entropy for MOVE commands
-                entropy = output.total_entropy(move_mask).mean()
+                # Total entropy (command + angle, no masking)
+                entropy = output.total_entropy().mean()
 
                 policy_loss = cmd_loss + angle_loss
                 loss = (

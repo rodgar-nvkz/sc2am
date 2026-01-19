@@ -3,7 +3,7 @@
 from torch import Tensor, distributions, nn
 
 from ..config import ModelConfig
-from .base import ActionHead, HeadLoss, HeadOutput
+from .base import ActionHead, HeadOutput
 
 
 class CommandHead(ActionHead):
@@ -78,20 +78,3 @@ class CommandHead(ActionHead):
         logits = logits.masked_fill(~mask, float("-inf"))
 
         return logits.argmax(dim=-1)
-
-    def compute_loss(
-        self, new_log_prob: Tensor, old_log_prob: Tensor, advantages: Tensor, clip_epsilon: float, mask: Tensor
-    ) -> HeadLoss:
-        """Compute PPO-clipped policy loss for command head.
-
-        Args:
-            new_log_prob: Log prob from current policy (B,)
-            old_log_prob: Log prob from behavior policy (B,)
-            advantages: Advantage estimates (B,)
-            clip_epsilon: PPO clipping parameter
-            mask: Float mask (B,).
-
-        Returns:
-            HeadLoss with loss tensor and metrics dict
-        """
-        return super().compute_loss(new_log_prob, old_log_prob, advantages, clip_epsilon, mask)

@@ -57,30 +57,19 @@ class ActionHead(nn.Module, ABC):
         ...
 
     def compute_loss(
-        self,
-        new_log_prob: Tensor,
-        old_log_prob: Tensor,
-        advantages: Tensor,
-        clip_epsilon: float,
-        mask: Tensor,
+        self, new_log_prob: Tensor, old_log_prob: Tensor, advantages: Tensor, clip_epsilon: float
     ) -> HeadLoss:
         """Compute PPO-clipped policy loss.
-
-        This default implementation ignores the mask (all samples weighted equally).
-        Override for special cases (e.g., AngleHead masked losses).
 
         Args:
             new_log_prob: Log prob from current policy (B,)
             old_log_prob: Log prob from behavior policy (B,)
             advantages: Advantage estimates (B,)
             clip_epsilon: PPO clipping parameter
-            mask: Float mask for weighted loss (B,). Use torch.ones for "all valid".
 
         Returns:
             HeadLoss with loss tensor and metrics dict
         """
-        # Default implementation ignores mask (CommandHead uses all samples)
-        del mask  # Unused in base implementation
         ratio = torch.exp(new_log_prob - old_log_prob)
         surr1 = ratio * advantages
         surr2 = torch.clamp(ratio, 1 - clip_epsilon, 1 + clip_epsilon) * advantages
