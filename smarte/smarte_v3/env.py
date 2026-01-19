@@ -66,6 +66,7 @@ class UnitState:
     health: float
     health_max: float
     weapon_cooldown: float = 0.0
+    facing: float = 0.0  # Unit facing in radians (0 = East/+X, π/2 = North/+Y)
 
     @classmethod
     def from_proto(cls, unit) -> "UnitState":
@@ -76,6 +77,7 @@ class UnitState:
             health=unit.health,
             health_max=unit.health_max,
             weapon_cooldown=getattr(unit, "weapon_cooldown", 0.0),
+            facing=getattr(unit, "facing", 0.0),
         )
 
     def distance_to(self, other: "UnitState") -> float:
@@ -110,10 +112,10 @@ class SC2GymEnv(gym.Env):
 
     # === Observation Space Constants ===
     # Time: time_remaining (1) = 1
-    # Marine: own_health (1), weapon_cooldown (1), weapon_cooldown_norm (1) = 3
-    # Per zergling (x2): health (1), angle_sin (1), angle_cos (1), distance (1) = 4
-    # Total: 1 + 3 + 4*2 = 12
-    OBS_SIZE = 12
+    # Marine: own_health (1), weapon_cooldown (1), weapon_cooldown_norm (1), facing_sin (1), facing_cos (1) = 5
+    # Per zergling (x2): health (1), angle_sin (1), angle_cos (1), distance (1), facing_sin (1), facing_cos (1) = 6
+    # Total: 1 + 5 + 6*2 = 18
+    OBS_SIZE = 18
 
     def __init__(self, params=None) -> None:
         super().__init__()
@@ -195,7 +197,7 @@ class SC2GymEnv(gym.Env):
     def _get_zergling_obs(self, marine: UnitState, zergling: UnitState | None) -> list[float]:
         """Get observation features for a single zergling relative to marine"""
         if zergling is None:
-            return [0.0, 0.0, 0.0, 0.0]
+            return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
         # Health (normalized)
         enemy_health = zergling.health / zergling.health_max
@@ -207,7 +209,10 @@ class SC2GymEnv(gym.Env):
         distance = marine.distance_to(zergling)
         distance_norm = min(1.0, distance / 30.0)
 
-        return [enemy_health, angle_sin, angle_cos, distance_norm]
+        # Zergling facing (sin, cos encoding)
+        facing_sin, facing_cos = math.sin(zergling.facing), math.cos(zergling.facing)
+
+        return [enemy_health, angle_sin, angle_cos, distance_norm, facing_sin, facing_cos]
 
     def _compute_observation(self) -> np.ndarray:
         if not self.units[1]:
@@ -220,6 +225,7 @@ class SC2GymEnv(gym.Env):
         own_health = marine.health / marine.health_max
         weapon_cooldown = int(bool(marine.weapon_cooldown))
         weapon_cooldown_norm = min(1.0, marine.weapon_cooldown / 15.0)
+        marine_facing_sin, marine_facing_cos = math.sin(marine.facing), math.cos(marine.facing)
 
         # Get zergling observations (pad with None if dead)
         if zerglings:
@@ -239,7 +245,16 @@ class SC2GymEnv(gym.Env):
         logger.debug(f"Zergling 2 obs: {z2_obs}")
         logger.debug(f"Time remaining: {time_remaining}")
 
-        obs = [time_remaining, own_health, weapon_cooldown, weapon_cooldown_norm, *z1_obs, *z2_obs]
+        obs = [
+            time_remaining,
+            own_health,
+            weapon_cooldown,
+            weapon_cooldown_norm,
+            marine_facing_sin,
+            marine_facing_cos,
+            *z1_obs,
+            *z2_obs,
+        ]
 
         return np.array(obs, dtype=np.float32)
 
@@ -267,9 +282,10 @@ class SC2GymEnv(gym.Env):
 
         if command == self.ACTION_MOVE:
             # Normalize angle to unit circle (model outputs raw values for correct gradients)
-            raw_dy, raw_dx = angle_sincos
-            magnitude = math.sqrt(raw_dx**2 + raw_dy**2)
-            dx, dy = raw_dx / magnitude, raw_dy / magnitude
+            # Action space is [sin, cos] following standard Cartesian (0=East/+X, π/2=North/+Y)
+            raw_sin, raw_cos = angle_sincos
+            magnitude = math.sqrt(raw_sin**2 + raw_cos**2)
+            dx, dy = raw_cos / magnitude, raw_sin / magnitude
             target_x = marine.x + dx * MOVE_STEP_SIZE
             target_y = marine.y + dy * MOVE_STEP_SIZE
 
