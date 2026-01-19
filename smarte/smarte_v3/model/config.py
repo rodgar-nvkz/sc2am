@@ -28,7 +28,10 @@ class ModelConfig:
     head_hidden_size: int = 32
 
     # Continuous action settings
-    angle_init_log_std: float = -0.5
+    # -0.5 -> std≈0.6 (too focused, gets stuck in fixed angles)
+    # 0.5 -> std≈1.65 (explores more, harder to get stuck)
+    # 1.0 -> std≈2.7 (nearly uniform on circle)
+    angle_init_log_std: float = 0.75
 
     # Weight initialization
     init_orthogonal: bool = True
