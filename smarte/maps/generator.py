@@ -8,7 +8,7 @@ from smarte.settings import PROJECT_ROOT
 class MapGenerator:
     """A placeholder for maps generation and manipulation"""
 
-    TEMPLATES = ("Flat64.SC2Map",)
+    TEMPLATES = ("Flat64b.SC2Map",)
 
     def __init__(self, folder: str = "maps") -> None:
         self.folder = PROJECT_ROOT / folder
