@@ -121,7 +121,7 @@ class SC2ClientProtocol:
 
     def enable_enemy_control(self) -> pb.ResponseDebug:
         """Enable control of enemy units (allows issuing commands to opponent's units)"""
-        logger.info("Enemy control enabled")
+        logger.debug("Enemy control enabled")
         command = DebugCommand(game_state="control_enemy")
         return self.send(debug=pb.RequestDebug(debug=[command])).debug
 

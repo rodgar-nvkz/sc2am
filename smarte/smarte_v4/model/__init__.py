@@ -12,8 +12,8 @@ Components:
 - actor_critic: Main ActorCritic model composing all components
 
 Example:
-    from smarte.smarte_v3.env import SC2GymEnv
-    from smarte.smarte_v3.model import ActorCritic, ModelConfig
+    from .env import SC2GymEnv
+    from .model import ActorCritic, ModelConfig
 
     # Initialize config from environment's ObsSpec (single source of truth)
     config = ModelConfig(

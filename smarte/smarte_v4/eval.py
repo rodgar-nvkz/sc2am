@@ -1,5 +1,3 @@
-import glob
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -9,17 +7,19 @@ from loguru import logger
 
 from smarte.settings import PROJECT_ROOT
 
+from . import EXPERIMENT_NAME
 from .env import SC2GymEnv
 from .model import ActorCritic, ModelConfig
 from .obs import ObsSpec
 
 
-def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level: int = 1):
+def eval_model(num_games: int = 10, model_path: str | Path | None = None, upgrade_level: int = 1):
     """Evaluate a trained model with hybrid action space."""
     device = torch.device("cpu")
 
     if model_path is None:
-        model_path = max(glob.glob("artifacts/models/smarte_v3_*.pt"), key=os.path.getctime)
+        model_dir = Path("artifacts/models") / EXPERIMENT_NAME
+        model_path = max(model_dir.glob("*.pt"), key=lambda p: p.stem)
 
     logger.info(f"Loading model from {model_path}")
 
@@ -68,7 +68,8 @@ def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level
 
     # Save replay of last game
     replay_data = env.game.clients[0].save_replay()
-    replay_dir = PROJECT_ROOT / "artifacts" / "replays" / Path(model_path).stem
+    model_path = Path(model_path)
+    replay_dir = PROJECT_ROOT / "artifacts" / "replays" / f"{model_path.parent.name}_{model_path.stem}"
     replay_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     replay_path = replay_dir / f"{timestamp}.SC2Replay"

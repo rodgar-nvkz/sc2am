@@ -38,6 +38,7 @@ import numpy as np
 import torch
 from loguru import logger
 
+from . import EXPERIMENT_NAME
 from .collector import EpisodeBatch, collector_worker
 from .config import IMPALAConfig
 from .env import SC2GymEnv
@@ -262,8 +263,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
                 w.join(timeout=1.0)
 
     # Save model
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    model_dir = Path("artifacts/models")
+    model_dir = Path("artifacts/models") / EXPERIMENT_NAME
     model_dir.mkdir(parents=True, exist_ok=True)
 
     checkpoint = {
@@ -275,11 +275,10 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
         "config": dataclasses.asdict(config),
     }
 
-    model_path = model_dir / f"smarte_v3_{timestamp}.pt"
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    model_path = model_dir / f"{timestamp}.pt"
     torch.save(checkpoint, model_path)
     print(f"Model saved to {model_path}")
-
-    return str(model_path)
 
 
 # ============================================================================
