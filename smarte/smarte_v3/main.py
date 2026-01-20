@@ -1,5 +1,4 @@
-"""
-IMPALA-style training for SC2 Marine vs Zerglings environment.
+"""IMPALA-style training for SC2 Marine vs Zerglings environment.
 
 Data architecture: 1 game = 1 episode = 1 training unit
 - Workers collect complete episodes
@@ -67,9 +66,9 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Initialize model config from environment class constants (required, no defaults)
+    # Initialize model config from environment's ObsSpec (single source of truth)
     model_config = ModelConfig(
-        obs_size=SC2GymEnv.OBS_SIZE,
+        obs_spec=SC2GymEnv.obs_spec,
         num_commands=SC2GymEnv.NUM_COMMANDS,
         move_action_id=SC2GymEnv.MOVE_ACTION_ID,
     )
@@ -104,7 +103,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
     print(f"Started {num_workers} workers")
 
     # Optimizer and LR scheduler
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, eps=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr, eps=config.lr_eps)
     total_updates = total_episodes // config.episodes_per_batch
     lr_scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer, config.lr_start_factor, config.lr_end_factor, total_updates

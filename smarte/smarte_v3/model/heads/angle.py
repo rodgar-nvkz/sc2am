@@ -35,7 +35,7 @@ def von_mises_entropy(concentration: Tensor) -> Tensor:
 
     PyTorch's VonMises doesn't implement entropy(), so we compute it ourselves.
 
-    Entropy of von Mises: H = -log(I_0(κ)) + κ * I_1(κ) / I_0(κ)
+    Entropy of von Mises: H = log(2π) + log(I_0(κ)) - κ * I_1(κ) / I_0(κ)
 
     Where I_0 and I_1 are modified Bessel functions of the first kind.
     We use torch.special.i0e and i1e (exponentially scaled versions) for
@@ -56,9 +56,8 @@ def von_mises_entropy(concentration: Tensor) -> Tensor:
     # log(I_0(κ)) = log(i0e(κ)) + κ
     log_i0 = torch.log(i0e) + concentration
 
-    # Entropy = log(2π) - log(I_0(κ)) + κ * I_1(κ) / I_0(κ)
-    #         = log(2π) - log(I_0(κ)) + κ * i1e(κ) / i0e(κ)
-    entropy = math.log(2 * math.pi) - log_i0 + concentration * (i1e / i0e)
+    # Entropy = log(2π) + log(I_0(κ)) - κ * i1e(κ) / i0e(κ)
+    entropy = math.log(2 * math.pi) + log_i0 - concentration * (i1e / i0e)
 
     return entropy
 
@@ -109,6 +108,7 @@ class AngleHead(ActionHead):
         self.log_concentration = nn.Parameter(torch.tensor(config.angle_init_log_concentration))
 
         # Auxiliary prediction head
+        # Predicts full enemy features to force encoder to represent enemy state
         self.aux_enabled = config.aux_enabled
         if self.aux_enabled:
             self.aux_head = nn.Sequential(
@@ -116,7 +116,7 @@ class AngleHead(ActionHead):
                 nn.SiLU(),
                 nn.Linear(config.aux_hidden_size, config.aux_target_size),
             )
-            self.aux_target_indices = config.aux_target_indices
+            self.aux_target_slices = config.aux_target_slices
 
         self._init_weights()
 
@@ -208,9 +208,6 @@ class AngleHead(ActionHead):
     def compute_aux_loss(self, obs: Tensor) -> Tensor:
         """Compute auxiliary prediction loss.
 
-        Forces the encoder to represent observation features (enemy angles,
-        distances) that are critical for correct action selection.
-
         Args:
             obs: Observations (B, obs_size)
 
@@ -222,7 +219,9 @@ class AngleHead(ActionHead):
 
         h = self.encoder(obs)
         aux_pred = self.aux_head(h)
-        aux_targets = obs[:, self.aux_target_indices]
+
+        # Concatenate all enemy slices as targets for now
+        aux_targets = torch.cat([obs[:, s] for s in self.aux_target_slices], dim=-1)
 
         return F.mse_loss(aux_pred, aux_targets)
 

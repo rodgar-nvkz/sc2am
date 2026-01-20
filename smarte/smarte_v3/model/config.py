@@ -1,24 +1,29 @@
 """Model configuration for ActorCritic architecture."""
 
-from dataclasses import dataclass, field
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..obs import ObsSpec
 
 
 @dataclass
 class ModelConfig:
     """Configuration for the ActorCritic model architecture.
 
-    This config controls all architectural decisions, making it easy to:
-    - Run ablation experiments (toggle features)
-    - Scale up/down network sizes
-    - Add new modalities (terrain, etc.)
-
-    Architecture: AlphaZero-style parallel prediction with masking.
+    AlphaZero-style parallel prediction with masking.
     All action heads predict independently from observations, then
     invalid/unused actions are masked at loss computation time.
+
+    The observation structure is defined by ObsSpec, which provides:
+    - Observation layout (sizes, slices)
+    - Auxiliary prediction targets
     """
 
-    # Observation space
-    obs_size: int
+    # Observation spec - single source of truth for observation structure
+    obs_spec: ObsSpec
 
     # Action space
     num_commands: int
@@ -45,9 +50,6 @@ class ModelConfig:
     # init_log_concentration = 0.0 → κ = 1.0 (good exploration to start)
     angle_init_log_concentration: float = 0.0
 
-    # Legacy parameter for backward compatibility (not used with von Mises)
-    angle_init_log_std: float = 0.75
-
     # Weight initialization
     init_orthogonal: bool = True
     init_gain: float = 1.41421356  # sqrt(2)
@@ -62,27 +64,24 @@ class ModelConfig:
     aux_enabled: bool = True
     aux_hidden_size: int = 16  # Smaller than main head - this should be easy
 
-    # Which observation indices to predict as auxiliary targets.
-    # Based on env._compute_observation() layout:
-    #   [0]: time_remaining
-    #   [1]: own_health
-    #   [2]: weapon_cooldown (binary)
-    #   [3]: weapon_cooldown_norm
-    #   [4]: marine_facing_sin
-    #   [5]: marine_facing_cos
-    #   [6-12]: z1: health, angle_sin, angle_cos, distance_norm, in_attack_range, facing_sin, facing_cos
-    #   [13-19]: z2: same as z1
-    #
-    # Critical features for chase/kite behavior:
-    #   - z1_angle_sin (7), z1_angle_cos (8), z1_distance (9)
-    #   - z2_angle_sin (14), z2_angle_cos (15), z2_distance (16)
-    # These determine "which direction to move" - exactly what the angle head outputs.
-    aux_target_indices: list[int] = field(default_factory=lambda: [7, 8, 9, 14, 15, 16])
+    # =========================================================================
+    # Computed properties
+    # =========================================================================
+
+    @property
+    def obs_size(self) -> int:
+        """Total observation size (from ObsSpec)."""
+        return self.obs_spec.total_size
+
+    @property
+    def aux_target_slices(self) -> list[slice]:
+        """Auxiliary prediction target slices (from ObsSpec)."""
+        return self.obs_spec.aux_target_slices
 
     @property
     def aux_target_size(self) -> int:
         """Number of observation features to predict in auxiliary task."""
-        return len(self.aux_target_indices)
+        return self.obs_spec.aux_target_size
 
     @property
     def head_input_size(self) -> int:

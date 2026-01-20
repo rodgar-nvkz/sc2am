@@ -18,19 +18,17 @@ class IMPALAConfig:
     total_episodes: int = 10_000  # Train for this many episodes
     num_epochs: int = 4  # Training passes per batch
 
-    # V-trace / GAE parameters
-    gamma: float = 0.99
-    gae_lambda: float = 0.99  # GAE λ for variance reduction (0=TD(0), 1=MC)
-    c_bar: float = 1.0  # Truncation for trace coefficients
-    rho_bar: float = 1.0  # Truncation for importance weights
-
     # PPO-style clipping
     clip_epsilon: float = 0.2
 
     # Loss coefficients
-    entropy_coef: float = 0.01
+    entropy_coef: float = 0.05  # Very explorative task with many local optimas, this and high gae_lambda helps
     value_coef: float = 0.5
     max_grad_norm: float = 40.0
+
+    # V-trace / GAE parameters
+    gamma: float = 0.99
+    gae_lambda: float = 0.99  # GAE λ for variance reduction (0=TD(0), 1=MC)
 
     # Auxiliary task coefficient
     # The auxiliary task forces the encoder to represent observation features

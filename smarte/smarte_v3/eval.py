@@ -11,6 +11,7 @@ from smarte.settings import PROJECT_ROOT
 
 from .env import SC2GymEnv
 from .model import ActorCritic, ModelConfig
+from .obs import ObsSpec
 
 
 def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level: int = 1):
@@ -23,7 +24,12 @@ def eval_model(num_games: int = 10, model_path: str | None = None, upgrade_level
     logger.info(f"Loading model from {model_path}")
 
     checkpoint = torch.load(model_path, map_location=device)
-    model_config = ModelConfig(**checkpoint["model_config"])
+
+    # Reconstruct ModelConfig with ObsSpec
+    saved_config = checkpoint["model_config"]
+    saved_config["obs_spec"] = ObsSpec(**saved_config["obs_spec"])
+
+    model_config = ModelConfig(**saved_config)
     model = ActorCritic(model_config).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()

@@ -15,9 +15,9 @@ Example:
     from smarte.smarte_v3.env import SC2GymEnv
     from smarte.smarte_v3.model import ActorCritic, ModelConfig
 
-    # Initialize config from environment class constants
+    # Initialize config from environment's ObsSpec (single source of truth)
     config = ModelConfig(
-        obs_size=SC2GymEnv.OBS_SIZE,
+        obs_spec=SC2GymEnv.obs_spec,
         num_commands=SC2GymEnv.NUM_COMMANDS,
         move_action_id=SC2GymEnv.MOVE_ACTION_ID,
     )
