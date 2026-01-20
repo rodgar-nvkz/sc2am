@@ -15,11 +15,12 @@ SC2AM prioritizes RL needs providing Gymnasium-native interface, lean state extr
 
 
 ## Progress
-
 | Date | Task | Problem | Description | Environment | Code |
 |------|------|---------|-------------|-------------|------|
 | 20250111 | Fire-Kite nearest enemy | Far enemy anreadable | Egocentric WASD kiting | 1v1 flat env | `train/ppo_v0.py` |
-| 20250114 | Seek and fire far enemy | Can not combine chase and kite policy | World-space polar coords | 1v2 flat env | `impala_v2/main.py` |
+| 20250114 | Seek and fire far enemy | Can not combine chase and kite policy | World-space polar coords | 1v2 flat32 group spawn | `impala_v2` |
+| 20250120 | Chase+Kite | Solved | Stable emerges in 10k ep | 1v2 flat64 round spawn | `smarte_v3` |
+| ??? | MultiAgent | 1-10 allies under control | TBD | TBD | TBD |
 
 
 ## RL References
