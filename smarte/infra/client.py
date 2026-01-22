@@ -5,11 +5,12 @@ from loguru import logger
 from portpicker import PickUnusedPort
 from s2clientprotocol import raw_pb2 as raw
 from s2clientprotocol import sc2api_pb2 as pb
-from s2clientprotocol.common_pb2 import Point2D, Race
+from s2clientprotocol.common_pb2 import Point, Point2D, Race
 from s2clientprotocol.debug_pb2 import (
     DebugCommand,
     DebugCreateUnit,
     DebugKillUnit,
+    DebugSetScore,
     DebugSetUnitValue,
 )
 
@@ -57,9 +58,9 @@ class SC2ClientProtocol:
         assert not response.error, f"SC2 API Error: {response.error}"
         return response
 
-    def host_game(self, map_data: bytes, players: list[pb.PlayerSetup]) -> pb.ResponseCreateGame:
+    def host_game(self, map_path: str, players: list[pb.PlayerSetup]) -> pb.ResponseCreateGame:
         # local_map = pb.LocalMap(map_data=map_data)
-        local_map = pb.LocalMap(map_path="Flat64b.SC2Map")
+        local_map = pb.LocalMap(map_path=map_path)
         request = pb.RequestCreateGame(local_map=local_map, player_setup=players, realtime=False, disable_fog=True)
         response = self.send(create_game=request).create_game
         return response
@@ -131,6 +132,13 @@ class SC2ClientProtocol:
         command = DebugCommand(create_unit=create)
         return self.send(debug=pb.RequestDebug(debug=[command])).debug
 
+    def map_command(self, trigger_cmd: str):
+        """Even supported in pb schema, this is a dead feature in Linux headless server (Base75689), always returns NoTriggerError.
+        Binary analysis of SC2_x64 shows the handler at VA 0x105d980 only recognizes "reset" (game loop restart, VA 0x2fc7670),
+        but even that is gated behind disabled feature flags (VA 0x1038948, 0x1038951)"""
+        map_command = pb.RequestMapCommand(trigger_cmd=trigger_cmd)
+        return self.send(map_command=map_command).map_command
+
     def unit_command(self, cmd: raw.ActionRawUnitCommand) -> pb.ResponseAction:
         action = pb.Action(action_raw=raw.ActionRaw(unit_command=cmd))
         return self.send(action=pb.RequestAction(actions=[action])).action
@@ -157,6 +165,23 @@ class SC2ClientProtocol:
 
     def save_replay(self) -> bytes:
         return self.send(save_replay=pb.RequestSaveReplay()).save_replay.data
+
+    def set_score(self, value: float) -> pb.ResponseDebug:
+        """Set the custom score value (can be read by map triggers via c_playerPropCustom)"""
+        command = DebugCommand(score=DebugSetScore(score=value))
+        return self.send(debug=pb.RequestDebug(debug=[command])).debug
+
+    def send_chat(self, message: str) -> pb.ResponseAction:
+        """Send a chat message (visible in replay)"""
+        chat = pb.ActionChat(channel=pb.ActionChat.Broadcast, message=message)
+        action = pb.Action(action_chat=chat)
+        return self.send(action=pb.RequestAction(actions=[action])).action
+
+    def camera_move(self, x: float, y: float) -> pb.ResponseAction:
+        """Move camera to position (may trigger TriggerAddEventCameraMove in map)"""
+        point = Point(x=x, y=y)
+        action = pb.Action(action_raw=raw.ActionRaw(camera_move=raw.ActionRawCameraMove(center_world_space=point)))
+        return self.send(action=pb.RequestAction(actions=[action])).action
 
 
 class SC2Client(SC2ClientProtocol):

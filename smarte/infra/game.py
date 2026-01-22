@@ -6,7 +6,7 @@ from loguru import logger
 from s2clientprotocol.common_pb2 import Protoss, Race, Terran, Zerg
 
 from smarte.infra.client import PortConfig, SC2Client
-from smarte.infra.server import SC2LocalhostServer
+from smarte.infra.server import GAME_FOLDER, SC2LocalhostServer
 from smarte.maps.generator import MapGenerator
 
 
@@ -25,11 +25,15 @@ class SC2SingleGame:
         atexit.register(self.close)
 
     def launch(self) -> "SC2SingleGame":
+        map_name, map_data = next(self.maps)
+        with open(GAME_FOLDER / "maps" / "smarte" / map_name, "wb") as map:
+            map.write(map_data)
+
         self.servers.append(SC2LocalhostServer())
         self.clients.append(SC2Client(self.servers[0].socket))
         players = [SC2Client.player(self.races[0], True)]
         players += [SC2Client.player(r, False) for r in self.races[1:]]
-        self.clients[0].host_game(next(self.maps), players=players)
+        self.clients[0].host_game(f"smarte/{map_name}", players=players)
         self.clients[0].join_game(self.races[0])
         logger.debug("Single player have joined the game")
         return self
@@ -41,9 +45,7 @@ class SC2SingleGame:
     def reset_map(self) -> bool:
         """Reset the current game if it is required"""
         if self.game_step >= self.SAFE_GAME_STEPS:
-            logger.info(
-                f"Resetting map after {self.game_step} steps (limit {self.SAFE_GAME_STEPS})"
-            )
+            logger.info(f"Resetting map after {self.game_step} steps (limit {self.SAFE_GAME_STEPS})")
             self.clients[0].restart_game()
             self.game_step = 0
             return True
@@ -57,9 +59,7 @@ class SC2SingleGame:
                 self.clients[0].get_observation()
             steps += 1
         duration = time.time() - start
-        logger.info(
-            f"Performance: {steps / duration:.2f} steps/sec over {duration:.2f} seconds"
-        )
+        logger.info(f"Performance: {steps / duration:.2f} steps/sec over {duration:.2f} seconds")
 
     def close(self) -> None:
         for server in self.servers:
@@ -71,13 +71,17 @@ class SC2MultiplayerGame(SC2SingleGame):
         return self.races[i], self.port_config, None if i == 0 else self.servers[0].host
 
     def launch(self) -> "SC2MultiplayerGame":
+        map_name, map_data = next(self.maps)
+        with open(GAME_FOLDER / "maps" / "smarte" / map_name, "wb") as map:
+            map.write(map_data)
+
         for _ in range(len(self.races)):
             server = SC2LocalhostServer()
             self.servers.append(server)
             self.clients.append(SC2Client(server.socket))
 
         players = [SC2Client.player(r, True) for r in self.races]
-        self.clients[0].host_game(next(self.maps), players=players)
+        self.clients[0].host_game(map_name, players=players)
         list(
             self.pool.map(
                 lambda i: self.clients[i].join_game(*self.join_args(i)),
@@ -88,8 +92,6 @@ class SC2MultiplayerGame(SC2SingleGame):
         return self
 
     def step(self, count: int = 1) -> int:
-        steps = list(
-            self.pool.map(lambda c: c.step(count).simulation_loop, self.clients)
-        )
+        steps = list(self.pool.map(lambda c: c.step(count).simulation_loop, self.clients))
         assert len(set(steps)) == 1, "All clients must return the same step count"
         return steps[0]
