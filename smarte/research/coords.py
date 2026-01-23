@@ -355,7 +355,6 @@ def evaluate(model: CoordModel, n_points: int, n_samples: int = 1024):
 
         # Aux metrics (only valid pairs)
         aux_pred_r = aux_pred.view(n_samples, -1, 3)
-        valid_aux = aux_mask.unsqueeze(-1).bool().expand_as(aux_pred_r)
 
         dist_err = (aux_pred_r[:, :, 0] - aux_target[:, :, 0]).abs()
         dist_err = (dist_err * aux_mask).sum() / aux_mask.sum()
@@ -366,7 +365,7 @@ def evaluate(model: CoordModel, n_points: int, n_samples: int = 1024):
         angle_err = (angle_diff.abs() * aux_mask).sum() / aux_mask.sum()
         angle_err_deg = angle_err * 180.0 / math.pi
 
-        print(f"\nAux head (pairwise, valid pairs only):")
+        print("\nAux head (pairwise, valid pairs only):")
         print(f"  Distance MAE: {dist_err.item():.6f} (normalized units)")
         print(f"  Angle MAE:    {angle_err_deg.item():.2f} degrees")
 
@@ -388,7 +387,7 @@ def evaluate(model: CoordModel, n_points: int, n_samples: int = 1024):
         in_range_correct = ((in_range_pred == in_range_true).float() * task_mask).sum()
         in_range_acc = in_range_correct / task_mask.sum()
 
-        print(f"\nTask head (query -> each point, valid only):")
+        print("\nTask head (query -> each point, valid only):")
         print(f"  Distance MAE:    {t_dist_err.item():.6f} (normalized units)")
         print(f"  Angle MAE:       {t_angle_err_deg.item():.2f} degrees")
         print(f"  In-range acc:    {in_range_acc.item():.4f}")
