@@ -56,13 +56,17 @@ class ModelConfig:
     policy_init_gain: float = 0.05
     value_init_gain: float = 1.0
 
+    # === Coordinate Embedding Settings ===
+    # Shared PointEncoder embeds (x, y, valid) into a learned representation.
+    # Heads receive non-coord features + flattened embeddings.
+    coord_embed_dim: int = 32
+    coord_hidden_size: int = 64
+
     # === Auxiliary Task Settings ===
-    # The auxiliary task forces the encoder to represent observation features
-    # that are critical for correct action selection. This prevents encoder
-    # collapse where all observations map to similar hidden states, causing
-    # policy gradients to cancel across episodes with different optimal actions.
+    # Pairwise geometry prediction from coord embeddings.
+    # Forces the encoder to learn spatial relationships.
     aux_enabled: bool = True
-    aux_hidden_size: int = 16  # Smaller than main head - this should be easy
+    aux_hidden_size: int = 64
 
     # =========================================================================
     # Computed properties
@@ -74,20 +78,36 @@ class ModelConfig:
         return self.obs_spec.total_size
 
     @property
-    def aux_target_slices(self) -> list[slice]:
-        """Auxiliary prediction target slices (from ObsSpec)."""
-        return self.obs_spec.aux_target_slices
+    def num_coord_points(self) -> int:
+        """Number of coordinate points (ally + enemies)."""
+        return self.obs_spec.num_coord_points
 
     @property
-    def aux_target_size(self) -> int:
-        """Number of observation features to predict in auxiliary task."""
-        return self.obs_spec.aux_target_size
+    def coord_flat_size(self) -> int:
+        """Size of flattened coordinate embeddings."""
+        return self.num_coord_points * self.coord_embed_dim
+
+    @property
+    def non_coord_size(self) -> int:
+        """Number of non-coordinate features in observation."""
+        return self.obs_spec.non_coord_size
+
+    @property
+    def num_aux_pairs(self) -> int:
+        """Number of directed pairs for auxiliary pairwise prediction."""
+        n = self.num_coord_points
+        return n * (n - 1)
+
+    @property
+    def aux_output_size(self) -> int:
+        """Aux head output: 3 values (distance, sin, cos) per directed pair."""
+        return self.num_aux_pairs * 3
 
     @property
     def head_input_size(self) -> int:
-        """Size of input to all heads (command, angle, value).
+        """Size of input to all heads: non-coord features + coord embeddings.
 
-        All heads now use the same input size - just the observation.
-        No command conditioning for angle head (AlphaZero-style parallel prediction).
+        Heads never see raw (x, y, valid). They see non-coord features
+        concatenated with learned coordinate embeddings.
         """
-        return self.obs_size
+        return self.non_coord_size + self.coord_flat_size

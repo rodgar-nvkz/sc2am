@@ -75,16 +75,14 @@ class AngleHead(ActionHead):
     - Action is (sin θ, cos θ) for environment compatibility
     - Log prob computed on the angle using von Mises density
 
-    Auxiliary Task:
-    An auxiliary head predicts observation features from the hidden state,
-    forcing the encoder to maintain observation-dependent representations.
+    Input is head_input (non-coord features + coord embeddings), not raw obs.
     """
 
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
 
-        # Encoder: obs -> hidden representation
+        # Encoder: head_input -> hidden representation
         # Deeper encoder with SiLU (Swish) for better gradient flow
         encoder_layers = []
         in_size = config.head_input_size
@@ -107,17 +105,6 @@ class AngleHead(ActionHead):
         # Starting with log(1) = 0 gives moderate exploration
         self.log_concentration = nn.Parameter(torch.tensor(config.angle_init_log_concentration))
 
-        # Auxiliary prediction head
-        # Predicts full enemy features to force encoder to represent enemy state
-        self.aux_enabled = config.aux_enabled
-        if self.aux_enabled:
-            self.aux_head = nn.Sequential(
-                nn.Linear(config.head_hidden_size, config.aux_hidden_size),
-                nn.SiLU(),
-                nn.Linear(config.aux_hidden_size, config.aux_target_size),
-            )
-            self.aux_target_slices = config.aux_target_slices
-
         self._init_weights()
 
     def _init_weights(self):
@@ -134,12 +121,6 @@ class AngleHead(ActionHead):
             if isinstance(module, nn.Linear):
                 nn.init.orthogonal_(module.weight, gain=self.config.init_gain)
                 nn.init.constant_(module.bias, 0.0)
-
-        if self.aux_enabled:
-            for module in self.aux_head:
-                if isinstance(module, nn.Linear):
-                    nn.init.orthogonal_(module.weight, gain=self.config.init_gain)
-                    nn.init.constant_(module.bias, 0.0)
 
     def _get_distribution(self, obs: Tensor) -> tuple[VonMises, Tensor]:
         """Get von Mises distribution and mean angle from observation.
@@ -204,26 +185,6 @@ class AngleHead(ActionHead):
             entropy=entropy,
             distribution=dist,
         )
-
-    def compute_aux_loss(self, obs: Tensor) -> Tensor:
-        """Compute auxiliary prediction loss.
-
-        Args:
-            obs: Observations (B, obs_size)
-
-        Returns:
-            Scalar MSE loss for auxiliary prediction
-        """
-        if not self.aux_enabled:
-            return torch.tensor(0.0, device=obs.device)
-
-        h = self.encoder(obs)
-        aux_pred = self.aux_head(h)
-
-        # Concatenate all enemy slices as targets for now
-        aux_targets = torch.cat([obs[:, s] for s in self.aux_target_slices], dim=-1)
-
-        return F.mse_loss(aux_pred, aux_targets)
 
     def get_deterministic_action(self, obs: Tensor) -> Tensor:
         """Get deterministic action (mean direction) for evaluation.
