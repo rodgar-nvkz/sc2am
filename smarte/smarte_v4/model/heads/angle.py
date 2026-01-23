@@ -75,7 +75,7 @@ class AngleHead(ActionHead):
     - Action is (sin θ, cos θ) for environment compatibility
     - Log prob computed on the angle using von Mises density
 
-    Input is head_input (non-coord features + coord embeddings), not raw obs.
+    Input is head_input: non-coord features + coord embeddings.
     """
 
     def __init__(self, config: ModelConfig):

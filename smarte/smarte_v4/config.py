@@ -12,7 +12,7 @@ class IMPALAConfig:
 
     # Batch settings
     num_workers: int = 8
-    episodes_per_batch: int = 8  # Collect this many complete episodes before training
+    episodes_per_batch: int = 16  # Collect this many complete episodes before training
 
     # Training settings
     total_episodes: int = 10_000  # Train for this many episodes
@@ -22,7 +22,7 @@ class IMPALAConfig:
     clip_epsilon: float = 0.2
 
     # Loss coefficients
-    entropy_coef: float = 0.02  # Very explorative task with many local optimas, this and high gae_lambda helps
+    entropy_coef: float = 0.02
     value_coef: float = 0.5
     max_grad_norm: float = 40.0
 

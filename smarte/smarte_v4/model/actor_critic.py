@@ -17,6 +17,7 @@ The model supports:
 - Auxiliary prediction task to prevent encoder collapse
 """
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -85,22 +86,20 @@ class PointEncoder(nn.Module):
         return self.encoder(points)
 
 
-class CoordAuxHead(nn.Module):
-    """Auxiliary head: predicts pairwise geometry from coordinate embeddings.
+class PairwiseAuxHead(nn.Module):
+    """Auxiliary head: predicts directed geometry from an embedding pair.
 
-    Forces PointEncoder to learn spatial relationships by predicting
-    (distance, sin, cos) for all directed pairs of points.
+    Small shared MLP takes (embed_i || embed_j) and predicts (dist, sin, cos)
+    for the i->j direction. Forces each individual embedding to encode
+    position well enough for any pair to recover geometry.
     """
 
     def __init__(self, config: ModelConfig):
         super().__init__()
-        self.config = config
         self.head = nn.Sequential(
-            nn.Linear(config.coord_flat_size, config.aux_hidden_size),
+            nn.Linear(config.aux_input_size, config.aux_hidden_size),
             nn.SiLU(),
-            nn.Linear(config.aux_hidden_size, config.aux_hidden_size),
-            nn.SiLU(),
-            nn.Linear(config.aux_hidden_size, config.aux_output_size),
+            nn.Linear(config.aux_hidden_size, 3),  # (dist, sin, cos)
         )
         if config.init_orthogonal:
             for module in self.head:
@@ -108,17 +107,16 @@ class CoordAuxHead(nn.Module):
                     nn.init.orthogonal_(module.weight, gain=config.init_gain)
                     nn.init.constant_(module.bias, 0.0)
 
-    def forward(self, coord_embeds_flat: Tensor) -> Tensor:
-        """Predict pairwise geometry.
+    def forward(self, embed_pairs: Tensor) -> Tensor:
+        """Predict directed geometry for embedding pairs.
 
         Args:
-            coord_embeds_flat: (B, num_points * embed_dim)
+            embed_pairs: (B*K, embed_dim*2) concatenated [embed_i, embed_j]
 
         Returns:
-            (B, num_pairs, 3) predictions: [distance, sin, cos] per pair
+            (B*K, 3) predictions: [distance, sin, cos]
         """
-        out = self.head(coord_embeds_flat)
-        return out.view(-1, self.config.num_aux_pairs, 3)
+        return self.head(embed_pairs)
 
 
 class ActorCritic(nn.Module):
@@ -136,19 +134,15 @@ class ActorCritic(nn.Module):
     P(action | obs) = P(command | obs) * P(angle | obs)  [independent]
 
     Auxiliary Prediction Task:
-    The angle head includes an auxiliary prediction head that forces the encoder
-    to represent observation features (enemy angles, distances). This prevents
-    encoder collapse where all observations map to similar hidden states, causing
-    policy gradients to cancel across episodes with different optimal actions.
+    A shared PairwiseAuxHead predicts directed geometry (dist, sin, cos) from
+    pairs of coordinate embeddings, forcing the PointEncoder to learn spatial
+    representations that support relational reasoning.
 
     Architecture:
-        obs -> CommandHead -> command
-            |
-            +-> AngleHead -> angle
-            |       |
-            |       +-> AuxHead -> predicted obs features (auxiliary task)
-            |
-            +-> CriticHead -> value
+        obs -> PointEncoder -> coord_embeds -+-> (flatten + non-coord) -> CommandHead -> command
+                    |                        +-> AngleHead -> angle
+                    |                        +-> CriticHead -> value
+                    +-> PairwiseAuxHead(embed_i || embed_j) -> (dist, sin, cos)
     """
 
     def __init__(self, config: ModelConfig):
@@ -158,7 +152,7 @@ class ActorCritic(nn.Module):
 
         # Coordinate embedding
         self.point_encoder = PointEncoder(config)
-        self.aux_head = CoordAuxHead(config) if config.aux_enabled else None
+        self.aux_head = PairwiseAuxHead(config) if config.aux_enabled else None
 
         # Register index tensors as buffers (move with model to device)
         coord_idx = config.obs_spec.coord_indices  # list of [x, y, valid] per point
@@ -182,12 +176,19 @@ class ActorCritic(nn.Module):
             }
         )
 
+    def _extract_coords(self, obs: Tensor) -> Tensor:
+        """Extract coordinate points from raw observations.
+
+        Args:
+            obs: (B, obs_size) raw observations
+
+        Returns:
+            (B, num_points, 3) tensor of [x_norm, y_norm, valid]
+        """
+        return obs[:, self._coord_indices.flatten()].view(-1, self.config.num_coord_points, 3)
+
     def _prepare_head_input(self, obs: Tensor) -> Tensor:
         """Extract coords, encode with PointEncoder, concat with non-coord features.
-
-        Embeddings are detached from the policy gradient path — only the aux
-        loss trains the PointEncoder. This prevents policy gradients from
-        interfering with geometry learning.
 
         Args:
             obs: (B, obs_size) raw observations
@@ -195,49 +196,32 @@ class ActorCritic(nn.Module):
         Returns:
             (B, head_input_size) tensor for action/value heads
         """
-        # Extract coordinate points: (B, num_points, 3)
-        coord_points = obs[:, self._coord_indices.flatten()].view(-1, self.config.num_coord_points, 3)
-        # Extract non-coord features: (B, non_coord_size)
+        coord_points = self._extract_coords(obs)
         non_coord = obs[:, self._non_coord_indices]
-        # Encode coordinates: (B, num_points, embed_dim)
         coord_embeds = self.point_encoder(coord_points)
-        # Flatten embeddings: (B, coord_flat_size)
         coord_flat = coord_embeds.flatten(1)
-        # Concatenate: (B, head_input_size)
         return torch.cat([non_coord, coord_flat], dim=-1)
 
-    def _compute_pairwise_targets(self, obs: Tensor) -> tuple[Tensor, Tensor]:
-        """Compute ground-truth pairwise geometry from raw coordinates.
+    def _compute_pair_targets(self, coords: Tensor, idx_i: Tensor, idx_j: Tensor) -> Tensor:
+        """Compute directed geometry targets for given pair indices.
 
         Args:
-            obs: (B, obs_size) raw observations
+            coords: (B, N, 2) normalized coordinates
+            idx_i: (K,) source point indices
+            idx_j: (K,) target point indices
 
         Returns:
-            targets: (B, num_pairs, 3) [distance, sin, cos] per directed pair
-            mask: (B, num_pairs) validity mask (1.0 if both points valid)
+            (B, K, 3) targets: [distance, sin, cos] per directed pair
         """
-        # Extract coordinate points: (B, num_points, 3)
-        coord_points = obs[:, self._coord_indices.flatten()].view(-1, self.config.num_coord_points, 3)
-        coords = coord_points[:, :, :2]  # (B, N, 2)
-        valid = coord_points[:, :, 2]  # (B, N)
-
-        N = self.config.num_coord_points
-        targets = []
-        masks = []
-
-        for i in range(N):
-            for j in range(N):
-                if i == j:
-                    continue
-                dx = coords[:, j, 0] - coords[:, i, 0]
-                dy = coords[:, j, 1] - coords[:, i, 1]
-                dist = torch.sqrt(dx * dx + dy * dy + 1e-8)
-                angle = torch.atan2(dy, dx)
-                pair_valid = valid[:, i] * valid[:, j]
-                targets.append(torch.stack([dist, torch.sin(angle), torch.cos(angle)], dim=-1))
-                masks.append(pair_valid)
-
-        return torch.stack(targets, dim=1), torch.stack(masks, dim=1)
+        # (B, K, 2)
+        pi = coords[:, idx_i]
+        pj = coords[:, idx_j]
+        diff = pj - pi  # (B, K, 2)
+        dx = diff[:, :, 0]
+        dy = diff[:, :, 1]
+        dist = torch.sqrt(dx * dx + dy * dy + 1e-8) * (1.0 / math.sqrt(2))
+        angle = torch.atan2(dy, dx)
+        return torch.stack([dist, torch.sin(angle), torch.cos(angle)], dim=-1)
 
     def forward(
         self, obs: Tensor, command: Tensor | None = None, angle: Tensor | None = None, *, action_mask: Tensor
@@ -288,32 +272,53 @@ class ActorCritic(nn.Module):
     def compute_aux_loss(self, obs: Tensor) -> Tensor:
         """Compute auxiliary pairwise geometry prediction loss.
 
-        Forces PointEncoder to learn spatial relationships by predicting
-        (distance, sin, cos) for all directed pairs of coordinate points.
-        Loss is masked: only pairs where both points are valid contribute.
+        Samples K random directed pairs (i, j) where i != j and both valid.
+        A small shared MLP predicts (dist, sin, cos) from (embed_i || embed_j).
+        Forces each embedding to independently encode position.
 
         Args:
             obs: Observations (B, obs_size)
 
         Returns:
-            Scalar masked MSE loss
+            Scalar MSE loss over sampled valid pairs
         """
         if self.aux_head is None:
             return torch.tensor(0.0, device=obs.device)
 
-        # Get coord embeddings
-        coord_points = obs[:, self._coord_indices.flatten()].view(-1, self.config.num_coord_points, 3)
-        coord_embeds = self.point_encoder(coord_points)
-        coord_flat = coord_embeds.flatten(1)
+        coord_points = self._extract_coords(obs)
+        coords = coord_points[:, :, :2]  # (B, N, 2)
+        valid = coord_points[:, :, 2]  # (B, N)
+        coord_embeds = self.point_encoder(coord_points)  # (B, N, embed_dim)
 
-        # Predict pairwise geometry
-        pred = self.aux_head(coord_flat)  # (B, num_pairs, 3)
+        B, N = coords.shape[0], coords.shape[1]
+        K = self.config.aux_num_samples
 
-        # Ground-truth targets
-        targets, mask = self._compute_pairwise_targets(obs)
+        # Build all directed pair indices (i, j) where i != j
+        all_pairs = [(i, j) for i in range(N) for j in range(N) if i != j]
+        num_pairs = len(all_pairs)
 
-        # Masked MSE: average over valid elements (pairs × 3 components)
-        mask_expanded = mask.unsqueeze(-1).expand_as(pred)  # (B, num_pairs, 3)
+        # Sample K pairs (with replacement if K > num_pairs)
+        sample_idx = torch.randint(num_pairs, (K,), device=obs.device)
+        all_pairs_t = torch.tensor(all_pairs, device=obs.device)  # (num_pairs, 2)
+        idx_i = all_pairs_t[sample_idx, 0]  # (K,)
+        idx_j = all_pairs_t[sample_idx, 1]  # (K,)
+
+        # Pair validity mask: (B, K)
+        pair_valid = valid[:, idx_i] * valid[:, idx_j]
+
+        # Gather embeddings and concatenate: (B, K, embed_dim*2)
+        embed_i = coord_embeds[:, idx_i]  # (B, K, embed_dim)
+        embed_j = coord_embeds[:, idx_j]  # (B, K, embed_dim)
+        embed_pairs = torch.cat([embed_i, embed_j], dim=-1)  # (B, K, embed_dim*2)
+
+        # Predict: (B*K, 3)
+        pred = self.aux_head(embed_pairs.view(B * K, -1)).view(B, K, 3)
+
+        # Targets: (B, K, 3)
+        targets = self._compute_pair_targets(coords, idx_i, idx_j)
+
+        # Masked MSE
+        mask_expanded = pair_valid.unsqueeze(-1).expand_as(pred)  # (B, K, 3)
         sq_err = (pred - targets) ** 2 * mask_expanded
         n_valid = mask_expanded.sum().clamp(min=1.0)
         return sq_err.sum() / n_valid

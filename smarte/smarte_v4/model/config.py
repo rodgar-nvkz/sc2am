@@ -63,10 +63,11 @@ class ModelConfig:
     coord_hidden_size: int = 64
 
     # === Auxiliary Task Settings ===
-    # Pairwise geometry prediction from coord embeddings.
-    # Forces the encoder to learn spatial relationships.
+    # Pairwise geometry: small shared MLP takes (embed_i || embed_j) and
+    # predicts directed (distance, sin, cos). K random pairs sampled per step.
     aux_enabled: bool = True
-    aux_hidden_size: int = 64
+    aux_hidden_size: int = 32
+    aux_num_samples: int = 6  # pairs sampled per step
 
     # =========================================================================
     # Computed properties
@@ -93,15 +94,9 @@ class ModelConfig:
         return self.obs_spec.non_coord_size
 
     @property
-    def num_aux_pairs(self) -> int:
-        """Number of directed pairs for auxiliary pairwise prediction."""
-        n = self.num_coord_points
-        return n * (n - 1)
-
-    @property
-    def aux_output_size(self) -> int:
-        """Aux head output: 3 values (distance, sin, cos) per directed pair."""
-        return self.num_aux_pairs * 3
+    def aux_input_size(self) -> int:
+        """Input size for pairwise aux head: two embeddings concatenated."""
+        return self.coord_embed_dim * 2
 
     @property
     def head_input_size(self) -> int:
