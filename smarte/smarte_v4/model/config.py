@@ -30,7 +30,7 @@ class ModelConfig:
     move_action_id: int  # For angle head masking
 
     # Head settings
-    head_hidden_size: int = 16
+    head_hidden_size: int = 32
 
     # Angle head architecture
     angle_encoder_layers: int = 2
@@ -49,7 +49,7 @@ class ModelConfig:
     # Shared UnitEncoder embeds full unit features into a learned representation.
     # Heads receive non-coord features + flattened embeddings.
     unit_embed_dim: int = 8
-    unit_hidden_size: int = 16
+    unit_hidden_size: int = 32
 
     # === Auxiliary Task Settings ===
     # Pairwise geometry: small shared MLP takes (embed_i || embed_j) and

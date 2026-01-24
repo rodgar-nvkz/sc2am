@@ -34,6 +34,7 @@ class Episode:
     behavior_values: np.ndarray  # (T,)
     action_masks: np.ndarray  # (T, num_commands)
     weight_version: int
+    episode_won: bool
 
     @property
     def length(self) -> int:
@@ -61,9 +62,13 @@ class EpisodeBatch:
     vtrace_targets: np.ndarray  # (N_total,)
     advantages: np.ndarray  # (N_total,)
 
+    # Per-timestep episode outcome
+    episode_won: np.ndarray  # (N_total,) bool
+
     # Metadata
     episode_lengths: list[int]
     episode_returns: list[float]
+    episode_won_flags: list[bool]
     weight_versions: list[int]
     num_episodes: int
 
@@ -74,6 +79,7 @@ class EpisodeBatch:
         # Collect metadata
         episode_lengths = [ep.length for ep in episodes]
         episode_returns = [ep.total_reward for ep in episodes]
+        episode_won_flags = [ep.episode_won for ep in episodes]
         weight_versions = [ep.weight_version for ep in episodes]
         total_steps = sum(episode_lengths)
 
@@ -89,6 +95,7 @@ class EpisodeBatch:
         action_masks = np.empty((total_steps, config.model.num_commands), dtype=bool)
         vtrace_targets = np.empty(total_steps, dtype=np.float32)
         advantages = np.empty(total_steps, dtype=np.float32)
+        episode_won = np.empty(total_steps, dtype=bool)
 
         # Fill arrays and compute V-trace per episode
         offset = 0
@@ -116,6 +123,7 @@ class EpisodeBatch:
             )
             vtrace_targets[offset:end] = ep_vtrace
             advantages[offset:end] = ep_adv
+            episode_won[offset:end] = ep.episode_won
 
             offset = end
 
@@ -130,8 +138,10 @@ class EpisodeBatch:
             action_masks=action_masks,
             vtrace_targets=vtrace_targets,
             advantages=advantages,
+            episode_won=episode_won,
             episode_lengths=episode_lengths,
             episode_returns=episode_returns,
+            episode_won_flags=episode_won_flags,
             weight_versions=weight_versions,
             num_episodes=len(episodes),
         )
@@ -149,6 +159,7 @@ class EpisodeBatch:
             "action_masks": torch.from_numpy(self.action_masks).to(device),
             "vtrace_targets": torch.from_numpy(self.vtrace_targets).to(device),
             "advantages": torch.from_numpy(self.advantages).to(device),
+            "episode_won": torch.from_numpy(self.episode_won).to(device),
         }
 
 
@@ -268,4 +279,5 @@ def collect_episode(env, model: ActorCritic, worker_id: int, weight_version: int
         behavior_values=np.array(values, dtype=np.float32),
         action_masks=np.array(action_masks, dtype=bool),
         weight_version=weight_version,
+        episode_won=info["won"],
     )

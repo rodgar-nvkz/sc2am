@@ -115,6 +115,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
     collected_episodes = 0
     episode_lengths: deque[int] = deque(maxlen=100)
     episode_returns: deque[float] = deque(maxlen=100)
+    episode_outcomes: deque[bool] = deque(maxlen=100)
     start_time = time.time()
 
     print(f"\nStarting IMPALA training for {total_episodes:,} episodes...")
@@ -147,9 +148,16 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
             # Convert to tensors
             tensors = batch.to_tensors(device)
 
-            # Normalize advantages - only scale by std, do NOT center, ruins angle head!
+            # Normalize advantages. BTW, centering ruins Angle head.
             advantages = tensors["advantages"]
             advantages = advantages / (advantages.std() + 1e-8)
+
+            # Adaptive asymmetric scaling: amplify rare outcomes from both sides
+            episode_outcomes.extend(batch.episode_won_flags)
+            win_rate = float(np.mean(episode_outcomes))
+            win_weight, lose_weight = max(1.0 - win_rate, 0.25), max(win_rate, 0.25)
+            outcome_scale = torch.where(tensors["episode_won"], 1.0 / win_weight, lose_weight)
+            advantages = advantages * outcome_scale
 
             # === Training loop: multiple epochs over the batch ===
             compiled_model.train()
@@ -220,7 +228,6 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
             eps_per_sec = collected_episodes / elapsed if elapsed > 0 else 0
             avg_return = np.mean(episode_returns) if episode_returns else 0.0
             avg_length = np.mean(episode_lengths) if episode_lengths else 0.0
-            win_rate = np.mean([r > 0 for r in episode_returns]) * 100 if episode_returns else 0.0
 
             # Weight staleness
             avg_staleness = np.mean(shared_weights.get_version() - np.array(batch.weight_versions))
@@ -235,7 +242,7 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
                     f"E/s: {eps_per_sec:>5.1f} | "
                     f"Rew: {avg_return:>5.2f} | "
                     f"Len: {avg_length:>5.0f} | "
-                    f"Win: {win_rate:>5.1f}% | "
+                    f"Win: {win_rate * 100:>5.1f}% | "
                     f"Loss: {avg_loss:>6.3f} | "
                     f"Aux: {avg_aux_loss:>5.3f} | "
                     f"Ent: {avg_entropy:>5.2f} | "
