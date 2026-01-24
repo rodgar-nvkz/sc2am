@@ -12,7 +12,7 @@ from smarte.maps.generator import MapGenerator
 
 class SC2SingleGame:
     RACES: list[Race] = [Terran, Zerg, Protoss]
-    SAFE_GAME_STEPS = 22.4 * 3600 * 4  # 4 hour when played in "real time"
+    SAFE_GAME_STEPS = 22.4 * 3600 * 10  # 10 hour when played in "real time"
 
     def __init__(self, races: list[Race]) -> None:
         self.maps = MapGenerator()
