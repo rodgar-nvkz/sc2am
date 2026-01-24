@@ -156,7 +156,7 @@ class SC2GymEnv(gym.Env):
 
         self.damage = DamageTracker()
         self.upgrade_level = random.choice(self.params.get("upgrade_level", [1]))
-        self.game_steps_per_env = self.params.get("game_steps_per_env", 7)  # Lucky 7 <:3
+        self.game_steps_per_env = self.params.get("game_steps_per_env", 4)
         self.init_game()
 
     def init_game(self) -> None:
@@ -180,9 +180,9 @@ class SC2GymEnv(gym.Env):
         for units in self.units.values():
             units.sort(key=lambda u: u.tag)
 
-        for zergling in self.units[2]:  # trigger everyone attack on first hit
-            if zergling.health < zergling.health_max and self.units[1]:
-                self.client.unit_attack_unit(zergling.tag, self.units[1][0].tag)
+        # for zergling in self.units[2]:  # trigger everyone attack on first hit
+        #     if zergling.health < zergling.health_max and self.units[1]:
+        #         self.client.unit_attack_unit(zergling.tag, self.units[1][0].tag)
 
         self.terminated = not all((self.units[1], self.units[2]))
         logger.debug(f"Marine alive: {len(self.units[1])}, Zerglings alive: {len(self.units[2])}")
