@@ -3,10 +3,12 @@
 Single source of truth for:
 - Observation layout (sizes, slices)
 - Encoding logic (raw state → normalized features)
-- Auxiliary prediction targets
 
 This module decouples observation structure from both the environment
 (which provides raw game state) and the model (which consumes observations).
+
+Unit feature layout (coords first for easy slicing):
+    [x/64, y/64, health, cooldown_or_-1, range/15, facing_sin, facing_cos, valid]
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
+from s2clientprotocol.raw_pb2 import Enemy
 
 if TYPE_CHECKING:
     from .env import UnitState
@@ -25,21 +28,23 @@ if TYPE_CHECKING:
 class ObsSpec:
     """Observation structure specification and builder.
 
-    Defines the layout of the observation vector and provides methods to build observations from raw game state.
-    This enables models to slice observations by entity type without hardcoding indices.
+    All units (ally + enemies) share the same 8-feature layout.
+    Coordinates are placed first (indices 0,1) for easy slicing in the model.
     """
 
     # Entity counts
     num_allies: int = 1
     num_enemies: int = 2
 
-    # Feature sizes per entity type
-    game_state_size: int = 1  # time_remaining
-    ally_feature_size: int = 7  # health, cooldown_norm, facing_sin, facing_cos, x_norm, y_norm, valid
-    enemy_feature_size: int = 6  # health, facing_sin, facing_cos, x_norm, y_norm, valid
+    # Feature size per unit (unified)
+    unit_feature_size: int = 8
+
+    # Coordinate features are the first 2
+    coord_size: int = 2
 
     # Normalization constants
     max_cooldown: float = 15.0
+    max_range: float = 15.0
     map_size: float = 64.0
 
     # =========================================================================
@@ -47,142 +52,60 @@ class ObsSpec:
     # =========================================================================
 
     @property
-    def total_size(self) -> int:
-        """Total observation vector size."""
-        allies = self.num_allies * self.ally_feature_size
-        enemies = self.num_enemies * self.enemy_feature_size
-        return self.game_state_size + allies + enemies
-
-    @property
-    def game_state_slice(self) -> slice:
-        return slice(0, self.game_state_size)
-
-    @property
-    def ally_slices(self) -> list[slice]:
-        """List of slices, one per ally."""
-        start = self.game_state_size
-        slices = []
-        for _ in range(self.num_allies):
-            slices.append(slice(start, start + self.ally_feature_size))
-            start += self.ally_feature_size
-        return slices
-
-    @property
-    def enemy_slices(self) -> list[slice]:
-        """List of slices, one per enemy."""
-        start = self.game_state_size + self.num_allies * self.ally_feature_size
-        slices = []
-        for _ in range(self.num_enemies):
-            slices.append(slice(start, start + self.enemy_feature_size))
-            start += self.enemy_feature_size
-        return slices
-
-    @property
-    def coord_indices(self) -> list[list[int]]:
-        """Indices of (x_norm, y_norm, valid) for each unit (ally + enemies).
-
-        Returns list of [x_idx, y_idx, valid_idx] per unit.
-        """
-        indices = []
-        # Ally coords are last 3 of ally features
-        for s in self.ally_slices:
-            base = s.stop - 3  # x_norm, y_norm, valid are last 3
-            indices.append([base, base + 1, base + 2])
-        # Enemy coords are last 3 of enemy features
-        for s in self.enemy_slices:
-            base = s.stop - 3
-            indices.append([base, base + 1, base + 2])
-        return indices
-
-    @property
-    def non_coord_indices(self) -> list[int]:
-        """Indices of non-coordinate features in the observation vector."""
-        coord_set = set()
-        for triple in self.coord_indices:
-            coord_set.update(triple)
-        return [i for i in range(self.total_size) if i not in coord_set]
-
-    @property
-    def num_coord_points(self) -> int:
-        """Number of coordinate points (ally + enemies)."""
+    def num_units(self) -> int:
         return self.num_allies + self.num_enemies
 
     @property
+    def obs_shape(self) -> tuple[int, int]:
+        """Shape of the observation array: (num_units, unit_feature_size)."""
+        return (self.num_units, self.unit_feature_size)
+
+    @property
     def non_coord_size(self) -> int:
-        """Number of non-coordinate features."""
-        return len(self.non_coord_indices)
+        """Number of non-coordinate features per unit."""
+        return self.unit_feature_size - self.coord_size
 
     # =========================================================================
     # Observation building
     # =========================================================================
 
-    def build(self, time_remaining: float, allies: list[UnitState], enemies: list[UnitState]) -> np.ndarray:
-        """Build observation array from raw game state"""
-        obs = np.zeros(self.total_size, dtype=np.float32)
+    def build(self, allies: list[UnitState], enemies: list[UnitState]) -> np.ndarray:
+        """Build observation array from raw game state.
 
-        # Game state
-        obs[self.game_state_slice] = [time_remaining]
+        Returns:
+            Array of shape (num_units, unit_feature_size)
+        """
+        obs = np.zeros(self.obs_shape, dtype=np.float32)
 
         # Allies
-        for i, ally_slice in enumerate(self.ally_slices):
-            if i < len(allies):
-                obs[ally_slice] = self._encode_ally(allies[i])
-            # else: remains zero (dead/missing ally, valid=0)
+        assert len(allies) <= self.num_allies
+        for i, ally in enumerate(allies):
+            obs[i] = self._encode_unit(ally, is_ally=True)
 
         # Enemies
-        for i, enemy_slice in enumerate(self.enemy_slices):
-            if i < len(enemies):
-                obs[enemy_slice] = self._encode_enemy(enemies[i])
-            # else: remains zero (dead/missing enemy, valid=0)
+        assert len(enemies) <= self.num_enemies
+        for i, enemy in enumerate(enemies):
+            unit_idx = self.num_allies + i
+            obs[unit_idx] = self._encode_unit(enemy, is_ally=False)
 
         return obs
 
-    def _encode_ally(self, ally: UnitState) -> np.ndarray:
-        """Encode ally features.
+    def _encode_unit(self, unit: UnitState, *, is_ally: bool) -> np.ndarray:
+        """Encode unit features with unified layout.
 
-        Features:
-            - health: normalized [0, 1]
-            - cooldown_norm: normalized [0, 1]
-            - facing_sin, facing_cos: unit facing direction
-            - x_norm, y_norm: position normalized by map_size
-            - valid: always 1.0 for ally
+        Layout: [x/64, y/64, health, cooldown_or_-1, range/15, facing_sin, facing_cos, valid]
 
-        Args:
-            ally: Ally UnitState
-
-        Returns:
-            Array of shape (ally_feature_size,)
+        Cooldown is normalized for allies, -1 sentinel for enemies.
         """
-        health = ally.health / ally.health_max
-        cooldown_norm = min(1.0, ally.weapon_cooldown / self.max_cooldown)
-        facing_sin = math.sin(ally.facing)
-        facing_cos = math.cos(ally.facing)
-        x_norm = ally.x / self.map_size
-        y_norm = ally.y / self.map_size
+        x_norm = unit.x / self.map_size
+        y_norm = unit.y / self.map_size
+        health = unit.health / unit.health_max
+        cooldown = min(1.0, unit.weapon_cooldown / self.max_cooldown) if is_ally else -1.0
+        attack_range = unit.attack_range / self.max_range
+        facing_sin = math.sin(unit.facing)
+        facing_cos = math.cos(unit.facing)
         valid = 1.0
 
-        return np.array([health, cooldown_norm, facing_sin, facing_cos, x_norm, y_norm, valid], dtype=np.float32)
-
-    def _encode_enemy(self, enemy: UnitState) -> np.ndarray:
-        """Encode enemy features with absolute coordinates.
-
-        Features:
-            - health: normalized [0, 1]
-            - facing_sin, facing_cos: enemy facing direction
-            - x_norm, y_norm: position normalized by map_size
-            - valid: 1.0 if alive, 0.0 if dead/missing
-
-        Args:
-            enemy: Enemy UnitState
-
-        Returns:
-            Array of shape (enemy_feature_size,)
-        """
-        health = enemy.health / enemy.health_max
-        facing_sin = math.sin(enemy.facing)
-        facing_cos = math.cos(enemy.facing)
-        x_norm = enemy.x / self.map_size
-        y_norm = enemy.y / self.map_size
-        valid = 1.0
-
-        return np.array([health, facing_sin, facing_cos, x_norm, y_norm, valid], dtype=np.float32)
+        return np.array(
+            [x_norm, y_norm, health, cooldown, attack_range, facing_sin, facing_cos, valid], dtype=np.float32
+        )

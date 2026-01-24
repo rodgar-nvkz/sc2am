@@ -12,7 +12,7 @@ from smarte.maps.generator import MapGenerator
 
 class SC2SingleGame:
     RACES: list[Race] = [Terran, Zerg, Protoss]
-    SAFE_GAME_STEPS = 22.4 * 3600 * 10  # 10 hour when played in "real time"
+    SAFE_GAME_STEPS = 22.4 * 3600 * 6  # Prevents SC2 API Error: ['Game has already ended']
 
     def __init__(self, races: list[Race]) -> None:
         self.maps = MapGenerator()
@@ -45,7 +45,7 @@ class SC2SingleGame:
     def reset_map(self) -> bool:
         """Reset the current game if it is required"""
         if self.game_step >= self.SAFE_GAME_STEPS:
-            logger.info(f"Resetting map after {self.game_step} steps (limit {self.SAFE_GAME_STEPS})")
+            logger.debug(f"Resetting map after {self.game_step} steps (limit {self.SAFE_GAME_STEPS})")
             self.clients[0].restart_game()
             self.game_step = 0
             return True

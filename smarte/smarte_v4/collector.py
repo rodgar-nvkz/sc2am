@@ -25,7 +25,7 @@ class Episode:
     """A single complete episode from a worker."""
 
     worker_id: int
-    observations: np.ndarray  # (T, obs_size)
+    observations: np.ndarray  # (T, num_units, unit_feature_size)
     commands: np.ndarray  # (T,)
     angles: np.ndarray  # (T, 2)
     rewards: np.ndarray  # (T,)
@@ -48,7 +48,7 @@ class Episode:
 class EpisodeBatch:
     """Batch of complete episodes, concatenated for training."""
 
-    observations: np.ndarray  # (N_total, obs_size)
+    observations: np.ndarray  # (N_total, num_units, unit_feature_size)
     commands: np.ndarray  # (N_total,)
     angles: np.ndarray  # (N_total, 2)
     rewards: np.ndarray  # (N_total,)
@@ -78,7 +78,8 @@ class EpisodeBatch:
         total_steps = sum(episode_lengths)
 
         # Pre-allocate concatenated arrays
-        observations = np.empty((total_steps, config.model.obs_size), dtype=np.float32)
+        obs_shape = config.model.obs_spec.obs_shape
+        observations = np.empty((total_steps, *obs_shape), dtype=np.float32)
         commands = np.empty(total_steps, dtype=np.int64)
         angles = np.empty((total_steps, 2), dtype=np.float32)
         rewards = np.empty(total_steps, dtype=np.float32)
@@ -224,8 +225,8 @@ def collect_episode(env, model: ActorCritic, worker_id: int, weight_version: int
     done = False
     steps = 0
 
-    # Pre-allocate observation tensor for reuse
-    obs_tensor = torch.empty(1, obs.shape[0], dtype=torch.float32)
+    # Pre-allocate observation tensor for reuse: (1, N, F)
+    obs_tensor = torch.empty(1, *obs.shape, dtype=torch.float32)
 
     with torch.inference_mode():
         while not done:

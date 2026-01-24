@@ -146,7 +146,7 @@ class SC2GymEnv(gym.Env):
         command = spaces.Discrete(self.NUM_COMMANDS)
         angle = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)  # sin, cos
         self.action_space = spaces.Dict({"command": command, "angle": angle})
-        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(self.obs_spec.total_size,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=self.obs_spec.obs_shape, dtype=np.float32)
 
         self.game = SC2SingleGame([Terran, Zerg]).launch()
         self.client = self.game.clients[0]
@@ -220,10 +220,9 @@ class SC2GymEnv(gym.Env):
     def _compute_observation(self) -> np.ndarray:
         """Build observation using ObsSpec."""
         if not self.units[1]:
-            return np.zeros(self.obs_spec.total_size, dtype=np.float32)
+            return np.zeros(self.obs_spec.obs_shape, dtype=np.float32)
 
-        time_remaining = 1.0 - (self.current_step / MAX_EPISODE_STEPS)
-        obs = self.obs_spec.build(time_remaining=time_remaining, allies=self.units[1], enemies=self.units[2])
+        obs = self.obs_spec.build(allies=self.units[1], enemies=self.units[2])
         logger.debug(f"Observation: {obs}")
         return obs
 
@@ -232,14 +231,16 @@ class SC2GymEnv(gym.Env):
         if self.current_step >= MAX_EPISODE_STEPS:
             return -1
 
-        # Get max health from actual units (or use cached value from episode start)
+        # Terminal Win\Lose reward, shaped in [-1, 4]
         if not self.units[2] or not self.units[1]:
             ally_health = sum([u.health / u.health_max for u in self.units[1]], 0.0) / 1.0
             enemy_health_left = sum([u.health for u in self.units[2]], 0.0)
             difference = ally_health - (enemy_health_left / self.enemy_max_health)
             return difference if difference <= 0 else (1 + difference) ** 2
 
-        return self.damage.dealt_step / self.enemy_max_health / 10  # EPISODE_TOTAL = [0;0.1] weak but useful signal
+        # intermediate signal creates a misaligned gradient with terminal reward
+        # return self.damage.dealt_step / self.enemy_max_health / 10  # EPISODE_TOTAL = [0;0.1]
+        return 0
 
     def agent_action(self, action: dict) -> None:
         """Execute hybrid action: discrete command + continuous angle."""
