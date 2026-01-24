@@ -30,11 +30,7 @@ class IMPALAConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95  # GAE λ for variance reduction (0=TD(0), 1=MC)
 
-    # Auxiliary task coefficient
-    # The auxiliary task forces the encoder to represent observation features
-    # (enemy angles, distances) that are critical for correct action selection.
-    # This prevents encoder collapse where policy gradients cancel across episodes.
-    # Start with 0.5 (equal to value_coef), tune down if it dominates policy learning.
+    # Auxiliary task coefficient (pairwise geometry prediction).
     aux_coef: float = 0.5
 
     # Optimizer

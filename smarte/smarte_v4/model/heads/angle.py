@@ -5,14 +5,11 @@ This solves the exploration problem where Gaussian on (sin, cos) fails to
 explore opposite directions effectively.
 
 Key insight: Gaussian noise on (sin, cos) gives poor angular coverage because
-the output magnitude affects exploration. With mean=(0, 7) and std=1.8, the
-policy can only explore ~20° around its current direction. Von Mises samples
-angles directly, giving uniform angular exploration regardless of concentration.
+the output magnitude affects exploration. Von Mises samples angles directly,
+giving uniform angular exploration regardless of concentration.
 
 Architecture:
-    obs -> encoder -> h -> output_layer -> θ (angle in radians)
-                      |
-                      +-> aux_head -> predicted observation features
+    head_input -> encoder -> h -> output_layer -> θ (angle in radians)
 
 The policy outputs angle θ, samples from von Mises(θ, κ), then converts to
 (sin, cos) for the environment. This maintains compatibility while fixing

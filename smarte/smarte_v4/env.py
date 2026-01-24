@@ -7,9 +7,8 @@ Uses vector observations and hybrid action space:
 - Continuous angle (sin, cos) for MOVE command in world-space polar coords
 
 The observation structure is defined by ObsSpec, which provides:
-- Observation layout (sizes, slices)
+- Observation layout (sizes, shape)
 - Encoding logic (raw state → normalized features)
-- Auxiliary prediction targets for the model
 
 All observation and action space constants are defined as class-level attributes
 in SC2GymEnv, allowing easy propagation to model/training code.
@@ -18,6 +17,7 @@ in SC2GymEnv, allowing easy propagation to model/training code.
 import math
 import random
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,7 +25,6 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 from loguru import logger
-from sympy.polys.matrices.linsolve import defaultdict
 
 from smarte.infra.game import SC2SingleGame, Terran, Zerg
 
@@ -213,7 +212,8 @@ class SC2GymEnv(gym.Env):
         self.game.step(count=2)  # unit spawn takes two frames
 
         self.observe_units()
-        self.enemy_max_health = sum(u.health_max for u in self.units[2])  # cached
+        self.ally_max_health = sum(u.health_max for u in self.units[1])
+        self.enemy_max_health = sum(u.health_max for u in self.units[2])
         assert len(self.units[1]) == 1, "Allies not spawned correctly"
         assert len(self.units[2]) == self.obs_spec.num_enemies, "Enemies not spawned correctly"
 
@@ -233,13 +233,11 @@ class SC2GymEnv(gym.Env):
 
         # Terminal Win\Lose reward, shaped in [-1, 4]
         if not self.units[2] or not self.units[1]:
-            ally_health = sum([u.health / u.health_max for u in self.units[1]], 0.0) / 1.0
+            ally_health = sum([u.health / u.health_max for u in self.units[1]], 0.0)
             enemy_health_left = sum([u.health for u in self.units[2]], 0.0)
-            difference = ally_health - (enemy_health_left / self.enemy_max_health)
+            difference = (ally_health / self.ally_max_health) - (enemy_health_left / self.enemy_max_health)
             return difference if difference <= 0 else (1 + difference) ** 2
 
-        # intermediate signal creates a misaligned gradient with terminal reward
-        # return self.damage.dealt_step / self.enemy_max_health / 10  # EPISODE_TOTAL = [0;0.1]
         return 0
 
     def agent_action(self, action: dict) -> None:

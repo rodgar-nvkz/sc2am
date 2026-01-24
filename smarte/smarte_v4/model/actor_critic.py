@@ -99,7 +99,7 @@ class ActorCritic(nn.Module):
             }
         )
 
-    def _prepare_head_input(self, obs: Tensor) -> Tensor:
+    def obs_to_head_input(self, obs: Tensor) -> Tensor:
         """Encode units and concatenate with non-coord features for heads.
 
         Args:
@@ -108,9 +108,9 @@ class ActorCritic(nn.Module):
         Returns:
             (B, head_input_size) tensor for action/value heads
         """
-        unit_embeds = self.unit_encoder(obs)  # (B, N, E)
-        non_coord = obs[:, :, 2:]  # (B, N, 6) — everything after x, y
-        return torch.cat([unit_embeds.flatten(1), non_coord.flatten(1)], dim=-1)
+        self._cached_embeds = self.unit_encoder(obs)  # (B, N, E)
+        non_coord = obs[:, :, self.config.obs_spec.coord_size :]  # (B, N, 6)
+        return torch.cat([self._cached_embeds.flatten(1), non_coord.flatten(1)], dim=-1)
 
     def forward(
         self, obs: Tensor, command: Tensor | None = None, angle: Tensor | None = None, *, action_mask: Tensor
@@ -126,7 +126,7 @@ class ActorCritic(nn.Module):
         Returns:
             ActorCriticOutput with command, angle, and value outputs
         """
-        head_input = self._prepare_head_input(obs)
+        head_input = self.obs_to_head_input(obs)
 
         command_output = self.command_head(obs=head_input, action=command, mask=action_mask)
         angle_output = self.angle_head(obs=head_input, action=angle)
@@ -136,7 +136,7 @@ class ActorCritic(nn.Module):
 
     def get_value(self, obs: Tensor) -> Tensor:
         """Get value estimate only (for V-trace computation)."""
-        head_input = self._prepare_head_input(obs)
+        head_input = self.obs_to_head_input(obs)
         return self.value_head(obs=head_input)
 
     def get_deterministic_action(self, obs: Tensor, *, action_mask: Tensor) -> tuple[Tensor, Tensor]:
@@ -151,7 +151,7 @@ class ActorCritic(nn.Module):
             - command: (B,) discrete command indices
             - angle: (B, 2) normalized sin/cos angle
         """
-        head_input = self._prepare_head_input(obs)
+        head_input = self.obs_to_head_input(obs)
 
         command = self.command_head.get_deterministic_action(obs=head_input, mask=action_mask)
         angle = self.angle_head.get_deterministic_action(obs=head_input)
@@ -161,15 +161,17 @@ class ActorCritic(nn.Module):
     def compute_aux_loss(self, obs: Tensor) -> Tensor:
         """Compute auxiliary pairwise geometry prediction loss.
 
+        Uses cached embeddings from the most recent forward/_prepare_head_input call.
+
         Args:
-            obs: Observations (B, N, 8)
+            obs: Observations (B, N, 8) — used for coords and valid mask
 
         Returns:
             Scalar MSE loss over all valid pairs
         """
         if self.aux_head is None:
             return torch.tensor(0.0, device=obs.device)
-        return self.aux_head.compute_loss(obs, self.unit_encoder)
+        return self.aux_head.compute_loss(obs, self._cached_embeds)
 
     def compute_losses(
         self,

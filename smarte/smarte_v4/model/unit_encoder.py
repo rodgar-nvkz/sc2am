@@ -80,7 +80,7 @@ class PairwiseAuxHead(nn.Module):
         """
         return self.head(embed_pairs)
 
-    def compute_loss(self, obs: Tensor, unit_encoder: UnitEncoder) -> Tensor:
+    def compute_loss(self, obs: Tensor, embeds: Tensor) -> Tensor:
         """Compute auxiliary pairwise geometry prediction loss.
 
         Gathers all valid unit embeddings across the batch, creates a random
@@ -88,15 +88,14 @@ class PairwiseAuxHead(nn.Module):
         (original, shuffled) pair. Self-pairs naturally produce [0, 0, 1] targets.
 
         Args:
-            obs: Observations (B, N, 8)
-            unit_encoder: The shared UnitEncoder to produce embeddings
+            obs: Observations (B, N, 8) — used for coords and valid mask
+            embeds: Pre-computed embeddings (B, N, E) from UnitEncoder
 
         Returns:
             Scalar MSE loss over all valid pairs
         """
         coords = obs[:, :, :2]  # (B, N, 2)
         valid = obs[:, :, 7]  # (B, N)
-        embeds = unit_encoder(obs)  # (B, N, E)
 
         # Gather all valid embeddings and coords across batch
         valid_mask = valid > 0.5  # (B, N) bool
