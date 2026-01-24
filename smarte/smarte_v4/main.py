@@ -228,20 +228,21 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
             # Get von Mises concentration for logging
             concentration = model.angle_head.get_concentration()
 
-            print(
-                f"Update {update_count:4d} | "
-                f"Eps: {collected_episodes:>6,}/{total_episodes:,} | "
-                f"E/s: {eps_per_sec:>5.1f} | "
-                f"Rew: {avg_return:>5.2f} | "
-                f"Len: {avg_length:>5.0f} | "
-                f"Win: {win_rate:>5.1f}% | "
-                f"Loss: {avg_loss:>6.3f} | "
-                f"Aux: {avg_aux_loss:>5.3f} | "
-                f"Ent: {avg_entropy:>5.2f} | "
-                f"κ: {concentration:>5.2f} | "
-                f"Stale: {avg_staleness:>4.1f} | "
-                f"LR: {optimizer.param_groups[0]['lr']:.2e}"
-            )
+            if update_count % 25 == 0:
+                print(
+                    f"Update {update_count:4d} | "
+                    f"Eps: {collected_episodes:>6,}/{total_episodes:,} | "
+                    f"E/s: {eps_per_sec:>5.1f} | "
+                    f"Rew: {avg_return:>5.2f} | "
+                    f"Len: {avg_length:>5.0f} | "
+                    f"Win: {win_rate:>5.1f}% | "
+                    f"Loss: {avg_loss:>6.3f} | "
+                    f"Aux: {avg_aux_loss:>5.3f} | "
+                    f"Ent: {avg_entropy:>5.2f} | "
+                    f"κ: {concentration:>5.2f} | "
+                    f"Stale: {avg_staleness:>4.1f} | "
+                    f"LR: {optimizer.param_groups[0]['lr']:.2e}"
+                )
 
         print("\nTraining complete!")
 
