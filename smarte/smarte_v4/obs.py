@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
-from s2clientprotocol.raw_pb2 import Enemy
 
 if TYPE_CHECKING:
     from .env import UnitState
