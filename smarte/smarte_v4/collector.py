@@ -208,7 +208,7 @@ def collector_worker(
                 logger.warning(f"Worker {worker_id} failed to send episode: {e}")
                 continue
 
-        logger.info(f"Worker {worker_id} shutting down...")
+        logger.debug(f"Worker {worker_id} shutting down...")
         env.close()
 
     except Exception as e:
