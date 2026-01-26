@@ -28,8 +28,8 @@ class SC2LocalhostServer:
         while start + timeout > time.time():
             try:
                 return websocket.create_connection(path, timeout=timeout)
-            except (ConnectionRefusedError, OSError):
-                time.sleep(0.1)
+            except (websocket.WebSocketException, ConnectionRefusedError, OSError):
+                time.sleep(0.5)
         raise TimeoutError(f"Could not connect to SC2 instance at {path}")
 
     def close(self):
