@@ -34,13 +34,13 @@ class SC2SingleGame:
         players = [SC2Client.player(self.races[0], True)]
         players += [SC2Client.player(r, False) for r in self.races[1:]]
         self.clients[0].host_game(f"smarte/{map_name}", players=players)
-        self.clients[0].join_game(self.races[0])
+        self.clients[0].join_game(self.races[0], None, None)
         logger.debug("Single player have joined the game")
         return self
 
-    def step(self, count: int = 1) -> int:
+    def step(self, count: int = 1) -> None:
         self.game_step += count
-        return self.clients[0].step(count).simulation_loop
+        self.clients[0].step(count)
 
     def reset_map(self) -> bool:
         """Reset the current game if it is required"""
@@ -91,7 +91,5 @@ class SC2MultiplayerGame(SC2SingleGame):
         logger.info("All players have joined the game")
         return self
 
-    def step(self, count: int = 1) -> int:
-        steps = list(self.pool.map(lambda c: c.step(count).simulation_loop, self.clients))
-        assert len(set(steps)) == 1, "All clients must return the same step count"
-        return steps[0]
+    def step(self, count: int = 1):
+        list(self.pool.map(lambda c: c.step(count), self.clients))
