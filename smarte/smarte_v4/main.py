@@ -77,7 +77,6 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
         model=model_config,
         total_episodes=total_episodes,
         num_workers=num_workers,
-        upgrade_levels=[1],
     )
 
     model = ActorCritic(config.model).to(device)
@@ -93,10 +92,10 @@ def train(total_episodes: int, num_workers: int, seed: int = 42, resume: str | N
     shared_weights = SharedWeights(model)
     shutdown_event = Event()
 
-    # Start workers
+    # Start workers, core pinning for better cache locality
     workers = []
     for i in range(num_workers):
-        args = (i, episode_queue, shared_weights, shutdown_event, config)
+        args = (i, episode_queue, shared_weights, shutdown_event, config, i * 2)
         p = Process(target=collector_worker, args=args, daemon=True)
         p.start()
         workers.append(p)

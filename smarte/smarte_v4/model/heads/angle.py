@@ -1,76 +1,33 @@
-"""Angle head for continuous movement direction with von Mises distribution.
+"""Angle head for continuous movement direction.
 
-Uses von Mises distribution (circular Gaussian) for proper angular exploration.
-This solves the exploration problem where Gaussian on (sin, cos) fails to
-explore opposite directions effectively.
-
-Key insight: Gaussian noise on (sin, cos) gives poor angular coverage because
-the output magnitude affects exploration. Von Mises samples angles directly,
-giving uniform angular exploration regardless of concentration.
+Uses Normal approximation of von Mises distribution for fast sampling while
+maintaining proper angular exploration behavior.
 
 Architecture:
     head_input -> encoder -> h -> output_layer -> θ (angle in radians)
 
-The policy outputs angle θ, samples from von Mises(θ, κ), then converts to
-(sin, cos) for the environment. This maintains compatibility while fixing
-exploration.
+The policy outputs angle θ, samples using Normal(θ, 1/√κ), then converts to
+(sin, cos) for the environment.
 """
-
-import math
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from torch.distributions import VonMises
 
 from ..config import ModelConfig
 from .base import ActionHead, HeadOutput
 
 
-def von_mises_entropy(concentration: Tensor) -> Tensor:
-    """Compute entropy of von Mises distribution.
-
-    PyTorch's VonMises doesn't implement entropy(), so we compute it ourselves.
-
-    Entropy of von Mises: H = log(2π) + log(I_0(κ)) - κ * I_1(κ) / I_0(κ)
-
-    Where I_0 and I_1 are modified Bessel functions of the first kind.
-    We use torch.special.i0e and i1e (exponentially scaled versions) for
-    numerical stability.
-
-    Args:
-        concentration: Concentration parameter κ (can be scalar or tensor)
-
-    Returns:
-        Entropy value(s), same shape as concentration
-    """
-    # I_0(κ) = i0e(κ) * exp(κ)
-    # I_1(κ) = i1e(κ) * exp(κ)
-    # So I_1(κ) / I_0(κ) = i1e(κ) / i0e(κ)
-    i0e = torch.special.i0e(concentration)
-    i1e = torch.special.i1e(concentration)
-
-    # log(I_0(κ)) = log(i0e(κ)) + κ
-    log_i0 = torch.log(i0e) + concentration
-
-    # Entropy = log(2π) + log(I_0(κ)) - κ * i1e(κ) / i0e(κ)
-    entropy = math.log(2 * math.pi) + log_i0 - concentration * (i1e / i0e)
-
-    return entropy
-
-
 class AngleHead(ActionHead):
-    """Continuous action head using von Mises distribution for angles.
+    """Continuous action head for angles using Normal approximation.
 
-    The von Mises distribution is the circular analog of the Gaussian:
-    - Defined on the circle [0, 2π) with natural wrap-around
-    - Concentration parameter κ controls spread (κ→0 is uniform, κ→∞ is point mass)
-    - Samples angles directly, giving uniform angular exploration
+    Uses Normal approximation of von Mises (std = 1/√κ) for fast sampling
+    while maintaining proper angular exploration behavior.
 
     Output format:
     - Network outputs mean angle θ (scalar per batch element)
     - Action is (sin θ, cos θ) for environment compatibility
-    - Log prob computed on the angle using von Mises density
+    - Log prob computed using Normal density
 
     Input is head_input: non-coord features + coord embeddings.
     """
@@ -119,68 +76,60 @@ class AngleHead(ActionHead):
                 nn.init.orthogonal_(module.weight, gain=self.config.init_gain)
                 nn.init.constant_(module.bias, 0.0)
 
-    def _get_distribution(self, obs: Tensor) -> tuple[VonMises, Tensor]:
-        """Get von Mises distribution and mean angle from observation.
-
-        Args:
-            obs: Observations (B, obs_size)
-
-        Returns:
-            Tuple of (von Mises distribution, mean angle tensor)
-        """
-        h = self.encoder(obs)
-        theta_mean = self.output_head(h).squeeze(-1)  # (B,)
-
-        # Concentration must be positive; use softplus for stability
-        # softplus(x) = log(1 + exp(x)), always positive, smooth
-        concentration = F.softplus(self.log_concentration)
-
-        # Clamp concentration to avoid numerical issues
-        # Very low κ (<0.01) can cause NaN in log_prob
-        # Very high κ (>100) provides no exploration
-        concentration = concentration.clamp(min=0.01, max=100.0)
-
-        dist = VonMises(theta_mean, concentration)
-        return dist, theta_mean
-
-    def forward(self, obs: Tensor, action: Tensor | None = None) -> HeadOutput:
+    def forward(
+        self, obs: Tensor, action: Tensor | None = None, *, inference: bool = False
+    ) -> HeadOutput | tuple[Tensor, Tensor]:
         """Forward pass: produce angle distribution and sample/evaluate.
+
+        Uses Normal approximation of von Mises for fast sampling and consistent
+        log_prob computation between collection and training.
 
         Args:
             obs: Observations (B, obs_size)
             action: Optional (sin, cos) action to evaluate (B, 2).
                     If None, samples new action.
+            inference: If True, returns only (action, log_prob) tuple for fast collection.
 
         Returns:
-            HeadOutput with:
-            - action: (sin θ, cos θ) tensor (B, 2)
-            - log_prob: log probability of the angle (B,)
-            - entropy: entropy of von Mises distribution (B,)
-            - distribution: the von Mises distribution object
+            If inference=False: HeadOutput with action, log_prob, entropy, distribution
+            If inference=True: Tuple of (action, log_prob)
         """
-        dist, theta_mean = self._get_distribution(obs)
+        # Network forward
+        h = self.encoder(obs)
+        theta_mean = self.output_head(h).squeeze(-1)  # (B,)
+
+        # Get concentration and std for Normal approximation
+        concentration = F.softplus(self.log_concentration).clamp(min=0.01, max=100.0)
+        std = torch.rsqrt(concentration)  # std ≈ 1/sqrt(κ)
 
         if action is None:
-            # Sample angle from von Mises distribution
-            theta_sample = dist.sample()
-            # Convert to (sin, cos) for environment
+            # Sample using Normal approximation (faster than von Mises rejection sampling)
+            noise = torch.randn_like(theta_mean)
+            theta_sample = theta_mean + std * noise
             action = torch.stack([torch.sin(theta_sample), torch.cos(theta_sample)], dim=-1)
-            log_prob = dist.log_prob(theta_sample)
+            # Normal log_prob: -0.5 * ((x - μ)/σ)² - log(σ) - 0.5*log(2π)
+            log_prob = -0.5 * noise * noise - torch.log(std) - 0.9189385332
         else:
             # Action is (sin, cos), convert back to angle for log_prob
-            # atan2(sin, cos) gives angle in [-π, π]
             theta_action = torch.atan2(action[:, 0], action[:, 1])
-            log_prob = dist.log_prob(theta_action)
+            # Wrap angle difference to [-π, π] to handle circular nature
+            delta = theta_action - theta_mean
+            delta = delta - 2 * 3.141592653589793 * torch.round(delta / (2 * 3.141592653589793))
+            # Normal log_prob for given action
+            normalized = delta / std
+            log_prob = -0.5 * normalized * normalized - torch.log(std) - 0.9189385332
 
-        # PyTorch VonMises doesn't implement entropy(), compute it ourselves
-        concentration = F.softplus(self.log_concentration).clamp(min=0.01, max=100.0)
-        entropy = von_mises_entropy(concentration).expand(obs.shape[0])
+        if inference:
+            return action, log_prob
+
+        # Full output with entropy (Normal entropy: 0.5 * log(2πe * σ²) = log(σ) + 1.4189)
+        entropy = (torch.log(std) + 1.4189385332).expand(obs.shape[0])
 
         return HeadOutput(
             action=action,
             log_prob=log_prob,
             entropy=entropy,
-            distribution=dist,
+            distribution=None,  # No distribution object with Normal approximation
         )
 
     def get_deterministic_action(self, obs: Tensor) -> Tensor:

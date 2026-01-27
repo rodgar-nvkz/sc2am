@@ -134,6 +134,24 @@ class ActorCritic(nn.Module):
 
         return ActorCriticOutput(command=command_output, angle=angle_output, value=value)
 
+    def forward_inference(self, obs: Tensor, action_mask: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        """Fast forward for collection - skips distribution/entropy overhead.
+
+        Args:
+            obs: Observations (B, N, 8)
+            action_mask: Boolean mask where True = valid action (B, num_commands).
+
+        Returns:
+            Tuple of (command, angle, cmd_log_prob, angle_log_prob, value)
+        """
+        head_input = self.obs_to_head_input(obs)
+
+        command, cmd_log_prob = self.command_head.forward(head_input, mask=action_mask, inference=True)
+        angle, angle_log_prob = self.angle_head.forward(head_input, inference=True)
+        value = self.value_head(obs=head_input)
+
+        return command, angle, cmd_log_prob, angle_log_prob, value
+
     def get_value(self, obs: Tensor) -> Tensor:
         """Get value estimate only (for V-trace computation)."""
         head_input = self.obs_to_head_input(obs)

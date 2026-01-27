@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import psutil
 import torch
 from loguru import logger
 
@@ -169,6 +170,7 @@ def collector_worker(
     shared_weights: SharedWeights,
     shutdown_event: Any,
     config: IMPALAConfig,
+    pin_core: int,
 ):
     """Worker process that collects complete episodes."""
 
@@ -182,12 +184,15 @@ def collector_worker(
     os.environ["MKL_NUM_THREADS"] = "1"
 
     try:
-        env = SC2GymEnv({"upgrade_level": config.upgrade_levels})
+        env = SC2GymEnv()
         model = ActorCritic(config.model)
         model.eval()
 
-        local_version = shared_weights.pull(model)
+        # Pin worker and SC2 process to the same core
+        psutil.Process().cpu_affinity([pin_core])
+        psutil.Process(env.game.servers[0].server.pid).cpu_affinity([pin_core])
 
+        local_version = shared_weights.pull(model)
         while not shutdown_event.is_set():
             current_version = shared_weights.get_version()
             if current_version > local_version:
@@ -234,7 +239,6 @@ def collect_episode(env, model: ActorCritic, worker_id: int, weight_version: int
     obs, info = env.reset()
     action_mask = info["action_mask"]
     done = False
-    steps = 0
 
     # Pre-allocate observation tensor for reuse: (1, N, F)
     obs_tensor = torch.empty(1, *obs.shape, dtype=torch.float32)
@@ -247,16 +251,16 @@ def collect_episode(env, model: ActorCritic, worker_id: int, weight_version: int
             # Get action from policy (reuse pre-allocated tensor)
             obs_tensor[0].copy_(torch.from_numpy(obs))
             mask_tensor = torch.from_numpy(action_mask).unsqueeze(0)
-            output = model(obs_tensor, action_mask=mask_tensor)
+            cmd_t, angle_t, cmd_lp, angle_lp, value_t = model.forward_inference(obs_tensor, mask_tensor)
 
-            cmd = output.command.action.item()
-            angle = output.angle.action.squeeze(0).numpy()
+            cmd = cmd_t.item()
+            angle = angle_t.squeeze(0).numpy()
 
             commands.append(cmd)
             angles.append(angle)
-            cmd_log_probs.append(output.command.log_prob.item())
-            angle_log_probs.append(output.angle.log_prob.item())
-            values.append(output.value.item())
+            cmd_log_probs.append(cmd_lp.item())
+            angle_log_probs.append(angle_lp.item())
+            values.append(value_t.item())
 
             # Step environment
             action = {"command": cmd, "angle": angle}
@@ -265,7 +269,6 @@ def collect_episode(env, model: ActorCritic, worker_id: int, weight_version: int
 
             rewards.append(reward)
             action_mask = info["action_mask"]
-            steps += 1
 
     # Convert lists to arrays
     return Episode(

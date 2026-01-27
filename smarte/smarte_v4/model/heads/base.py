@@ -48,11 +48,17 @@ class ActionHead(nn.Module, ABC):
     """
 
     @abstractmethod
-    def forward(self, *args, **kwargs) -> HeadOutput:
+    def forward(self, *args, **kwargs) -> HeadOutput | tuple[Tensor, Tensor]:
         """Forward pass: produce action distribution and sample/evaluate.
 
+        Args:
+            *args: Head-specific positional arguments
+            **kwargs: Head-specific keyword arguments. If inference=True is passed,
+                returns only (action, log_prob) tuple for fast collection.
+
         Returns:
-            HeadOutput with action, log_prob, entropy, distribution
+            If inference=False (default): HeadOutput with action, log_prob, entropy, distribution
+            If inference=True: Tuple of (action, log_prob)
         """
         ...
 

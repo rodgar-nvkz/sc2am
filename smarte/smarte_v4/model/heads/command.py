@@ -1,5 +1,6 @@
 """Command head for discrete action selection."""
 
+import torch
 from torch import Tensor, distributions, nn
 
 from ..config import ModelConfig
@@ -40,28 +41,38 @@ class CommandHead(ActionHead):
         assert isinstance(output_layer, nn.Linear)
         nn.init.orthogonal_(output_layer.weight, gain=self.config.policy_init_gain)
 
-    def forward(self, obs: Tensor, action: Tensor | None = None, *, mask: Tensor) -> HeadOutput:
+    def forward(
+        self, obs: Tensor, action: Tensor | None = None, *, mask: Tensor, inference: bool = False
+    ) -> HeadOutput | tuple[Tensor, Tensor]:
         """Forward pass: produce command distribution and sample/evaluate.
 
         Args:
             obs: Observation tensor (B, obs_size)
             action: Optional command to evaluate (B,). If None, samples new action.
             mask: Boolean mask where True = valid action (B, num_commands).
+            inference: If True, returns only (action, log_prob) tuple for fast collection.
 
         Returns:
-            HeadOutput with discrete command action
+            If inference=False: HeadOutput with discrete command action
+            If inference=True: Tuple of (action, log_prob)
         """
         logits = self.net(obs)
-
-        # Apply action mask: set invalid actions to -inf
         logits = logits.masked_fill(~mask, float("-inf"))
 
-        dist = distributions.Categorical(logits=logits)
-
         if action is None:
-            action = dist.sample()
+            # Sample from categorical (avoiding Categorical distribution object)
+            probs = torch.softmax(logits, dim=-1)
+            action = torch.multinomial(probs, 1).squeeze(-1)
 
-        return HeadOutput(action=action, log_prob=dist.log_prob(action), entropy=dist.entropy(), distribution=dist)
+        # Compute log_prob for the action
+        log_prob = torch.log_softmax(logits, dim=-1).gather(1, action.unsqueeze(-1)).squeeze(-1)
+
+        if inference:
+            return action, log_prob
+
+        # Full output with entropy and distribution
+        dist = distributions.Categorical(logits=logits)
+        return HeadOutput(action=action, log_prob=log_prob, entropy=dist.entropy(), distribution=dist)
 
     def get_deterministic_action(self, obs: Tensor, *, mask: Tensor) -> Tensor:
         """Get deterministic action (argmax) for evaluation.
