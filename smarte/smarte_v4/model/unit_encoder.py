@@ -39,13 +39,18 @@ class UnitEncoder(nn.Module):
     def forward(self, units: Tensor) -> Tensor:
         """Encode unit observations.
 
+        Invalid units (valid=0 at index 7) are zeroed out to prevent them
+        from influencing downstream computations.
+
         Args:
             units: (B, N, unit_feature_size) full unit features
 
         Returns:
-            (B, N, embed_dim) embeddings
+            (B, N, embed_dim) embeddings (zeroed for invalid units)
         """
-        return self.encoder(units)
+        embeds = self.encoder(units)
+        valid = units[:, :, 7:8]  # (B, N, 1)
+        return embeds * valid
 
 
 class PairwiseAuxHead(nn.Module):
