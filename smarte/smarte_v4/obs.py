@@ -32,8 +32,8 @@ class ObsSpec:
     """
 
     # Entity counts
-    num_allies: int = 1
-    num_enemies: int = 2
+    num_allies: int
+    num_enemies: int
 
     # Feature size per unit (unified)
     unit_feature_size: int = 8

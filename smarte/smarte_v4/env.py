@@ -135,11 +135,13 @@ class SC2GymEnv(gym.Env):
     MOVE_ACTION_ID = ACTION_MOVE
 
     # === Observation Spec ===
-    obs_spec: ObsSpec = ObsSpec()
+    obs_spec: ObsSpec = ObsSpec(num_allies=4, num_enemies=4)
 
     def __init__(self, params=None) -> None:
         super().__init__()
         self.params = params or {}
+        self.spawn_allies = 1
+        self.spawn_enemies = 2
 
         # Hybrid action space: discrete command + continuous angle
         command = spaces.Discrete(self.NUM_COMMANDS)
@@ -199,10 +201,10 @@ class SC2GymEnv(gym.Env):
         # Random position for marine
         marine_x = random.uniform(SPAWN_AREA_MIN, SPAWN_AREA_MAX)
         marine_y = random.uniform(SPAWN_AREA_MIN, SPAWN_AREA_MAX)
-        self.client.spawn_units(UNIT_MARINE, (marine_x, marine_y), owner=1, quantity=1)
+        self.client.spawn_units(UNIT_MARINE, (marine_x, marine_y), owner=1, quantity=self.spawn_allies)
 
         # Spawn zerglings at random distance/angle from marine
-        for _ in range(self.obs_spec.num_enemies):
+        for _ in range(self.spawn_enemies):
             spawn_distance = random.uniform(MIN_SPAWN_DISTANCE, MAX_SPAWN_DISTANCE)
             spawn_angle = random.uniform(0, 2 * math.pi)
             ling_x = marine_x + spawn_distance * math.cos(spawn_angle)
@@ -214,8 +216,8 @@ class SC2GymEnv(gym.Env):
         self.observe_units()
         self.ally_max_health = sum(u.health_max for u in self.units[1])
         self.enemy_max_health = sum(u.health_max for u in self.units[2])
-        assert len(self.units[1]) == 1, "Allies not spawned correctly"
-        assert len(self.units[2]) == self.obs_spec.num_enemies, "Enemies not spawned correctly"
+        assert len(self.units[1]) == self.spawn_allies, "Allies not spawned correctly"
+        assert len(self.units[2]) == self.spawn_enemies, "Enemies not spawned correctly"
 
     def _compute_observation(self) -> np.ndarray:
         """Build observation using ObsSpec."""
