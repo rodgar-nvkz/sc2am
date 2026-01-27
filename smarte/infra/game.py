@@ -58,7 +58,7 @@ class SC2SingleGame:
             self.clients[0].get_observation() if obs else None
             steps += 1
         duration = time.time() - start
-        logger.info(f"Performance: {steps / duration:.2f} steps/sec over {duration:.2f} seconds")
+        logger.info(f"Game performance: {steps / duration:.2f} steps/sec over {duration:.2f} seconds")
 
     def close(self) -> None:
         for server in self.servers:

@@ -79,32 +79,25 @@ class ObsSpec:
         # Allies
         assert len(allies) <= self.num_allies
         for i, ally in enumerate(allies):
-            obs[i] = self._encode_unit(ally, is_ally=True)
+            self._encode_unit(obs[i], ally, is_ally=True)
 
         # Enemies
         assert len(enemies) <= self.num_enemies
         for i, enemy in enumerate(enemies):
-            unit_idx = self.num_allies + i
-            obs[unit_idx] = self._encode_unit(enemy, is_ally=False)
+            self._encode_unit(obs[self.num_allies + i], enemy, is_ally=False)
 
         return obs
 
-    def _encode_unit(self, unit: UnitState, *, is_ally: bool) -> np.ndarray:
-        """Encode unit features with unified layout.
+    def _encode_unit(self, out: np.ndarray, unit: UnitState, *, is_ally: bool) -> None:
+        """Encode unit features directly into output array.
 
         Layout: [x/64, y/64, health, cooldown_or_-1, range/15, facing_sin, facing_cos, valid]
-
-        Cooldown is normalized for allies, -1 sentinel for enemies.
         """
-        x_norm = unit.x / self.map_size
-        y_norm = unit.y / self.map_size
-        health = unit.health / unit.health_max
-        cooldown = min(1.0, unit.weapon_cooldown / self.max_cooldown) if is_ally else -1.0
-        attack_range = unit.attack_range / self.max_range
-        facing_sin = math.sin(unit.facing)
-        facing_cos = math.cos(unit.facing)
-        valid = 1.0
-
-        return np.array(
-            [x_norm, y_norm, health, cooldown, attack_range, facing_sin, facing_cos, valid], dtype=np.float32
-        )
+        out[0] = unit.x / self.map_size
+        out[1] = unit.y / self.map_size
+        out[2] = unit.health / unit.health_max
+        out[3] = min(1.0, unit.weapon_cooldown / self.max_cooldown) if is_ally else -1.0
+        out[4] = unit.attack_range / self.max_range
+        out[5] = math.sin(unit.facing)
+        out[6] = math.cos(unit.facing)
+        out[7] = 1.0

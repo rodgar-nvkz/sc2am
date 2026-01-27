@@ -17,6 +17,7 @@ in SC2GymEnv, allowing easy propagation to model/training code.
 import math
 import random
 import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
@@ -224,9 +225,7 @@ class SC2GymEnv(gym.Env):
         if not self.units[1]:
             return np.zeros(self.obs_spec.obs_shape, dtype=np.float32)
 
-        obs = self.obs_spec.build(allies=self.units[1], enemies=self.units[2])
-        logger.debug(f"Observation: {obs}")
-        return obs
+        return self.obs_spec.build(allies=self.units[1], enemies=self.units[2])
 
     def _compute_reward(self) -> float:
         """Compute reward based on damage dealt/taken and terminal conditions"""
@@ -310,3 +309,14 @@ class SC2GymEnv(gym.Env):
 
     def close(self) -> None:
         self.game.close()
+
+    def perf(self, seconds: int = 5) -> None:
+        steps, start = 0, time.time()
+        while time.time() - start < seconds:
+            self.reset()
+            for _ in range(100):
+                self.step({"command": self.ACTION_MOVE, "angle": [0.5, 0.5]})
+                steps += 1
+
+        duration = time.time() - start
+        logger.info(f"Env performance: {steps / duration:.2f} steps/sec over {duration:.2f} seconds")
