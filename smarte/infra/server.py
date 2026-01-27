@@ -19,7 +19,7 @@ class SC2LocalhostServer:
 
     def run_instance(self):
         path = str(GAME_FOLDER / GAME_ENTRYPOINT)
-        args = path, "-listen", self.host, "-port", str(self.port), "-displayMode", "0"
+        args = path, f"-listen={self.host}", f"-port={self.port}", "-displayMode=0"
         return subprocess.Popen(args, stderr=subprocess.DEVNULL, encoding="utf8")
 
     def connect(self, timeout: int = 45):

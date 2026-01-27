@@ -55,8 +55,7 @@ class SC2SingleGame:
         steps, start = 0, time.time()
         while time.time() - start < seconds:
             self.step()
-            if obs:
-                self.clients[0].get_observation()
+            self.clients[0].get_observation() if obs else None
             steps += 1
         duration = time.time() - start
         logger.info(f"Performance: {steps / duration:.2f} steps/sec over {duration:.2f} seconds")
